@@ -209,7 +209,8 @@ function renderVitals(s) {
   const p = s.power || {};
   const [label, color] = POWER[p.type] || [p.type ? p.type[0] + p.type.slice(1).toLowerCase() : "Power", "var(--mana)"];
   $("power-name").textContent = label;
-  const pw = setBar("power-fill", "power-text", p.cur, p.max, p.pct);
+  const shown = shownPower(p);
+  const pw = setBar("power-fill", "power-text", shown.cur, shown.max, p.pct);
   $("power-fill").closest(".vital").hidden = !pw;
   $("power-fill").style.setProperty("--power", color);
 
@@ -423,6 +424,23 @@ const PANE = {
 const COSMETIC_SLOTS = new Set([4, 19]);
 const ICON_URL = (name) => `https://wow.zamimg.com/images/wow/icons/large/${name}.jpg`;
 const RACE_TOKENS = { "night elf": "nightelf", undead: "scourge", "blood elf": "bloodelf" };
+// For items Wowhead doesn't know (Forever-only items): a plain icon for the slot.
+const SLOT_ICONS = {
+  1: "inv_helmet_01", 2: "inv_jewelry_necklace_01", 3: "inv_shoulder_01", 15: "inv_misc_cape_01",
+  5: "inv_chest_cloth_01", 4: "inv_shirt_01", 19: "inv_shirt_guildtabard_01", 9: "inv_bracer_01",
+  10: "inv_gauntlets_01", 6: "inv_belt_01", 7: "inv_pants_01", 8: "inv_boots_01", 11: "inv_jewelry_ring_01",
+  12: "inv_jewelry_ring_01", 13: "inv_jewelry_talisman_01", 14: "inv_jewelry_talisman_01",
+  16: "inv_sword_01", 17: "inv_shield_01", 18: "inv_weapon_bow_01",
+};
+
+// The game counts rage in tenths (max 1000); its UI shows 0-100.
+function shownPower(p) {
+  if (p?.type === "RAGE" && p.max >= 1000) {
+    const tenth = (v) => (v == null ? v : Math.round(v / 10));
+    return { ...p, cur: tenth(p.cur), max: tenth(p.max) };
+  }
+  return p || {};
+}
 
 // Item id -> icon name, from Wowhead's public item data (Forever items match
 // Classic ids). Remembered in the browser so each item is looked up once.
@@ -457,10 +475,13 @@ function slotHtml([slot, label], it) {
   if (!it) return `<span class="slot empty" title="${label}"><span>${label}</span></span>`;
   const q = Number.isInteger(it.quality) ? Math.min(Math.max(it.quality, 0), 7) : 1;
   const title = `${it.name || `Item ${it.id ?? ""}`}${it.ilvl ? ` · item level ${it.ilvl}` : ""}`;
-  const icon = it.id in icons && icons[it.id] ? `<img src="${ICON_URL(icons[it.id])}" alt="" loading="lazy">` : "";
+  // icons[id]: a name, null when Wowhead doesn't have the item, missing until looked up.
+  const known = it.id && icons[it.id];
+  const unknown = !it.id || icons[it.id] === null;
+  const img = known || unknown ? `<img src="${ICON_URL(known || SLOT_ICONS[slot])}" alt="" loading="lazy">` : "";
   return `<a class="slot q${q}" data-item="${it.id ?? ""}" title="${esc(title)}"
-      ${it.id ? `href="https://www.wowhead.com/classic/item=${it.id}" target="_blank" rel="noopener"` : ""}>
-    ${icon || `<span class="letter">${esc((it.name || "?").charAt(0))}</span>`}
+      ${unknown ? "" : `href="https://www.wowhead.com/classic/item=${it.id}" target="_blank" rel="noopener"`}>
+    ${img || `<span class="letter">${esc((it.name || "?").charAt(0))}</span>`}
   </a>`;
 }
 
@@ -486,8 +507,10 @@ function renderGear() {
   for (const it of items) {
     if (it.id && !(it.id in icons)) {
       itemIcon(it.id).then((name) => {
-        const el = name && document.querySelector(`.slot[data-item="${it.id}"]`);
-        if (el && !el.querySelector("img")) el.innerHTML = `<img src="${ICON_URL(name)}" alt="" loading="lazy">`;
+        const el = document.querySelector(`.slot[data-item="${it.id}"]`);
+        if (!el || el.querySelector("img")) return;
+        if (!name) el.removeAttribute("href");  // not on Wowhead: no tooltip to link to
+        el.innerHTML = `<img src="${ICON_URL(name || SLOT_ICONS[it.slot])}" alt="" loading="lazy">`;
       });
     }
   }
@@ -502,7 +525,7 @@ function renderGear() {
   // Average item level over real gear slots; shirt and tabard don't count.
   const levels = items.filter((it) => !COSMETIC_SLOTS.has(it.slot) && it.ilvl).map((it) => it.ilvl);
   const avg = levels.length ? Math.round(levels.reduce((a, b) => a + b, 0) / levels.length) : null;
-  const p = s.power || {};
+  const p = shownPower(s.power);
   const rows = [
     ["Health", s.healthMax != null ? fmt.format(s.healthMax) : null],
     [(POWER[p.type] || [p.type || "Power"])[0], p.max != null ? fmt.format(p.max) : null],
