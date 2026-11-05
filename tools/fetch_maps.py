@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Builds frontend/maps/<uiMapID>.jpg from the game's own world map tiles.
+"""Builds frontend/maps/<uiMapID>.jpg from the game's own world map tiles,
+with every exploration overlay drawn in (the map as if fully discovered).
 
 Map tables and tile files come from wago.tools for the given client build, so
 the images match exactly what the in-game world map shows. Coordinates from
@@ -22,6 +23,7 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "frontend", "maps")
 API = "https://wago.tools"
+OVERLAY_TILE = 256  # exploration overlays are cut into tiles of this size
 
 
 def get(url):
@@ -57,6 +59,20 @@ def main():
         if t["LayerIndex"] == "0":
             tiles.setdefault(t["UiMapArtID"], []).append(t)
 
+    overlays = {}
+    for o in table("WorldMapOverlay", args.build):
+        if o["PlayerConditionID"] == "0":
+            overlays.setdefault(o["UiMapArtID"], []).append(o)
+    overlay_tiles = {}
+    for t in table("WorldMapOverlayTile", args.build):
+        if t["LayerIndex"] == "0":
+            overlay_tiles.setdefault(t["WorldMapOverlayID"], []).append(t)
+
+    def blp(fdid):
+        image = Image.open(io.BytesIO(get(f"{API}/api/casc/{fdid}?version={args.build}")))
+        time.sleep(0.1)  # be gentle with wago.tools
+        return image
+
     index = {}
     for link in links:
         if link["PhaseID"] != "0":
@@ -79,12 +95,24 @@ def main():
 
         canvas = Image.new("RGB", (w, h))
         for t in tiles[art_id]:
-            blp = get(f"{API}/api/casc/{t['FileDataID']}?version={args.build}")
-            tile = Image.open(io.BytesIO(blp)).convert("RGB")
+            tile = blp(t["FileDataID"]).convert("RGB")
             canvas.paste(tile, (int(t["ColIndex"]) * tw, int(t["RowIndex"]) * th))
-            time.sleep(0.1)  # be gentle with wago.tools
+        # Explored areas: each overlay is TextureWidth x TextureHeight at
+        # OffsetX/OffsetY, split into tiles; edge tiles are cropped to fit.
+        for o in overlays.get(art_id, []):
+            ow, oh = int(o["TextureWidth"]), int(o["TextureHeight"])
+            for t in overlay_tiles.get(o["ID"], []):
+                col, row = int(t["ColIndex"]), int(t["RowIndex"])
+                cw = min(OVERLAY_TILE, ow - col * OVERLAY_TILE)
+                ch = min(OVERLAY_TILE, oh - row * OVERLAY_TILE)
+                if cw <= 0 or ch <= 0:
+                    continue
+                tile = blp(t["FileDataID"]).convert("RGBA").crop((0, 0, cw, ch))
+                canvas.paste(tile, (int(o["OffsetX"]) + col * OVERLAY_TILE,
+                                    int(o["OffsetY"]) + row * OVERLAY_TILE), tile)
         canvas.save(path, quality=85, optimize=True)
-        print(f"{map_id:>5} {ui['Name_lang']} ({w}x{h}, {len(tiles[art_id])} tiles)", flush=True)
+        print(f"{map_id:>5} {ui['Name_lang']} ({w}x{h}, {len(tiles[art_id])} tiles, "
+              f"{len(overlays.get(art_id, []))} overlays)", flush=True)
 
     with open(os.path.join(OUT, "index.json"), "w") as f:
         json.dump(index, f, indent=1, sort_keys=True)
