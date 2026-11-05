@@ -80,8 +80,15 @@ end
 
 -- Tracking is active only when enabled and not hidden. While hidden nothing
 -- is recorded at all, so it can't leak out later either.
+-- Recording goes on while appearing offline; only sharing stops. While a
+-- "share or keep private?" question about offline time is open
+-- (db.offlineSince), nothing is shared either.
 function FT.IsRecording()
-	return db and db.settings.enabled and not db.settings.appearOffline
+	return db and db.settings.enabled
+end
+
+function FT.IsSharing()
+	return FT.IsRecording() and not db.settings.appearOffline and not db.offlineSince
 end
 
 -- Accepts "a.b.c.d" or "a.b.c.d:port" on a private/loopback IPv4 range.
@@ -253,7 +260,7 @@ end
 -- "Enable tracking" was switched off, so everything is re-read and resent.
 local resumeListeners = {}
 function FT.OnResume(fn) resumeListeners[#resumeListeners + 1] = fn end
-local wasRecording
+local wasSharing
 
 local function refresh()
 	if not db then return end
@@ -264,15 +271,16 @@ local function refresh()
 		db.professions = nil
 		FT.professionsKey = nil
 		FT.current = nil
-		wasRecording = false
+		wasSharing = false
 		return
 	end
-	if wasRecording == false then
-		-- Back from appearing offline: re-read now rather than on the next game event.
+	local sharing = FT.IsSharing()
+	if sharing and wasSharing == false then
+		-- Sharing again: re-read now rather than on the next game event.
 		FT.questsDirty, FT.gearDirty, FT.professionsDirty = true, true, true
 		for _, fn in ipairs(resumeListeners) do fn() end
 	end
-	wasRecording = true
+	wasSharing = sharing
 	local snap = FT.BuildSnapshot()
 	if plausible(snap) then
 		FT.current = snap
@@ -467,7 +475,9 @@ function FT.StatusText()
 	if not s.enabled then
 		state = "|cffff6060paused|r"
 	elseif s.appearOffline then
-		state = "|cffffb347appearing offline|r"
+		state = "|cffffb347appearing offline (still recording, privately)|r"
+	elseif db.offlineSince then
+		state = "|cffffb347offline until you choose to share or keep your offline time private|r"
 	else
 		state = "|cff60ff60sharing live|r"
 	end

@@ -47,7 +47,7 @@ Open the options with `/ft` (also under *Options → AddOns → Forever Tracker*
 | Setting | Effect |
 |---|---|
 | Enable tracking | Off: nothing is recorded, the strip disappears and the companion sends nothing. |
-| Appear offline | Takes effect immediately. Friends see *Offline*. Nothing is recorded while it's on, so those moments never show up later. |
+| Appear offline | Takes effect immediately. Friends see *Offline* and nothing is shared, but the addon keeps recording. When you turn it off, a popup asks whether to share what happened meanwhile (the UI reloads and the companion uploads it) or keep it private (it's deleted). You stay offline until you answer. |
 | Share health from the combat log | Turns on the game's combat log so the companion can read your health and mana from it (see above). |
 | Backend address | LAN IP:port of the backend, e.g. `192.168.1.221:8787`. Only private IPv4 ranges are accepted, both in game and in the companion. |
 | Sync now | Reloads the UI so the game writes the full history file. |

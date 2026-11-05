@@ -138,6 +138,8 @@ end }
 tinsert = table.insert
 local reloaded = false
 function ReloadUI() reloaded = true end
+local popups = {}
+function StaticPopup_Show(name, text) popups[#popups + 1] = { name = name, text = text } end
 
 local function load(file) assert(loadfile("addon/ForeverTracker/" .. file))("ForeverTracker") end
 load("Core.lua")
@@ -152,6 +154,7 @@ UnitName = function(u) if u == "target" then return T and T.name end return base
 UnitLevel = function(u) if u == "target" then return T and T.level end return baseLevel(u) end
 UnitClass = function(u) if u == "target" then return T and T.class end return baseClass(u) end
 load("Strip.lua")
+load("Offline.lua")
 load("Minimap.lua")
 local FT = ForeverTracker
 local eventFrame = frames[1]
@@ -182,14 +185,33 @@ for step = 1, 300 do -- 30 seconds at 10 Hz
 	if step == 30 or step == 40 or step == 41 then JumpOrAscendStart() end  -- 41: same press mid-air
 	if step == 60 then swimming = true; JumpOrAscendStart(); swimming = false end
 	if step == 70 then JumpOrAscendStart() end
+	-- Appear offline: still recorded, never sent; on unticking, "Keep private" deletes it.
 	if step == 225 then FT.SetSetting("appearOffline", true) end
-	if step == 245 then FT.SetSetting("appearOffline", false) end  -- everything is resent right away
+	if step == 235 then fire("QUEST_TURNED_IN", 179, 450, 120) end
+	if step == 245 then FT.SetSetting("appearOffline", false) end
+	if step == 250 then
+		assert(#popups == 1 and popups[1].text:find("1 journal entry"), "no share popup: " .. tostring(popups[1] and popups[1].text))
+		print("popup: " .. popups[1].text)
+		StaticPopupDialogs.FOREVERTRACKER_SHARE_OFFLINE.OnCancel(nil, nil, "clicked")  -- Keep private
+	end
 	if step == 200 then gear[17] = { 2129, "Large Round Shield", 2, 7 }; fire("PLAYER_EQUIPMENT_CHANGED", 17, false) end
 	local bytes = FT.StripEncode()
 	for i = 0, 170 do f:write(string.char(bytes[i])) end
 end
 f:close()
 print("frames written")
+
+-- Keep private deleted the offline time; Share reloads to upload it.
+for _, e in ipairs(FT.db.events) do assert(e.t < 1793890000 + 22, "offline event kept: " .. e.type .. " at " .. e.t) end
+FT.SetSetting("appearOffline", true)
+gtime = gtime + 1; clock = clock + 1
+FT.AddEvent("level", { level = 4 })
+FT.SetSetting("appearOffline", false)
+assert(#popups == 2, "no second popup")
+StaticPopupDialogs.FOREVERTRACKER_SHARE_OFFLINE.OnAccept()
+assert(reloaded and FT.db.offlineSince == nil, "Share should reload and clear the pending state")
+print("appear offline: keep private deletes, share reloads: ok")
+reloaded = false
 
 -- Minimap code box: paste a code, press Enter -> saved and the UI reloads.
 FT.ShowCodeDialog()

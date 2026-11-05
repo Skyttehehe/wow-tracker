@@ -87,8 +87,16 @@ local function enqueue(kind, payload)
 			return
 		end
 	end
-	queue[#queue + 1] = { kind = kind, data = data }
+	queue[#queue + 1] = { kind = kind, data = data, t = kind == "E" and payload.t or nil }
 	lastSent[kind] = GetTime()
+end
+
+-- Drops journal events from `since` on that are still waiting to be sent
+-- (offline time the player chose to keep private).
+function FT.DropQueuedEvents(since)
+	for i = #queue, 1, -1 do
+		if queue[i].kind == "E" and queue[i].t and queue[i].t >= since then table.remove(queue, i) end
+	end
 end
 
 local function identity()
@@ -194,7 +202,7 @@ local function encode()
 
 	local settings = FT.db.settings
 	local flags, valid = 0, 0
-	if settings.appearOffline then
+	if settings.appearOffline or FT.db.offlineSince then
 		flags = FLAG_HIDDEN
 	else
 		local s = FT.current and FT.BuildSnapshot()

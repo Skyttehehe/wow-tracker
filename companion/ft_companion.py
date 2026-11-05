@@ -654,13 +654,18 @@ class Companion:
 
     def sharing(self):
         s = self.settings()
-        return bool(s.get("enabled")) and not s.get("appearOffline")
+        return bool(s.get("enabled")) and not s.get("appearOffline") and not self.offline_pending()
+
+    def offline_pending(self):
+        """The player hasn't chosen yet whether to share time spent appearing offline."""
+        return bool((self.db or {}).get("offlineSince"))
 
     def build_payload(self, running):
         s = self.settings()
         if not s.get("enabled"):
             return None  # tracking off: nothing leaves this machine
-        if s.get("appearOffline"):
+        if s.get("appearOffline") or self.offline_pending():
+            # Recorded while appearing offline (or not decided yet): stays on this PC.
             return {"kind": "presence", "online": False}
         snap = self.db.get("snapshot")
         if not snap:

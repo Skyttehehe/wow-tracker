@@ -88,7 +88,9 @@ local function tooltip(self)
 	if not s.enabled then
 		GameTooltip:AddLine("Tracking is off", 1, 0.4, 0.4)
 	elseif s.appearOffline then
-		GameTooltip:AddLine("Appearing offline", 1, 0.7, 0.3)
+		GameTooltip:AddLine("Appearing offline (still recording privately)", 1, 0.7, 0.3)
+	elseif FT.db.offlineSince then
+		GameTooltip:AddLine("Offline until you answer: share your offline time?", 1, 0.7, 0.3)
 	else
 		GameTooltip:AddLine("Sharing live", 0.4, 1, 0.4)
 	end

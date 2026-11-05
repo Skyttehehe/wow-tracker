@@ -44,7 +44,8 @@ local function build(parent, top)
 	enabled:SetPoint("TOPLEFT", top, "BOTTOMLEFT", 0, -12)
 
 	local hidden = checkbox(parent, "Appear offline",
-		"Your friends see you as offline. Nothing is recorded while this is on, so it can't show up later.",
+		"Your friends see you as offline and nothing is shared, but your progress is still recorded. "
+		.. "When you turn it off, you choose whether to share what happened meanwhile or keep it private.",
 		function(v) FT.SetSetting("appearOffline", v) end)
 	hidden:SetPoint("TOPLEFT", enabled, "BOTTOMLEFT", 0, -4)
 
