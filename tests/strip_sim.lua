@@ -30,6 +30,7 @@ function CreateFrame()
 	f.UnregisterEvent = function() end
 	f.SetScript = function(self, name, fn) self.scripts[name] = fn end
 	f.CreateTexture = function() return texture() end
+	f.CreateFontString = function() return texture() end
 	setmetatable(f, { __index = function() return function() end end })
 	frames[#frames + 1] = f
 	return f
@@ -120,6 +121,10 @@ C_Item = { GetDetailedItemLevelInfo = function(l)
 	end
 end }
 
+tinsert = table.insert
+local reloaded = false
+function ReloadUI() reloaded = true end
+
 local function load(file) assert(loadfile("addon/ForeverTracker/" .. file))("ForeverTracker") end
 load("Core.lua")
 load("Quests.lua")
@@ -131,8 +136,11 @@ UnitName = function(u) if u == "target" then return T and T.name end return base
 UnitLevel = function(u) if u == "target" then return T and T.level end return baseLevel(u) end
 UnitClass = function(u) if u == "target" then return T and T.class end return baseClass(u) end
 load("Strip.lua")
+load("Minimap.lua")
 local FT = ForeverTracker
 local eventFrame = frames[1]
+Minimap = CreateFrame()
+Minimap.GetWidth = function() return 140 end
 local function fire(e, ...) eventFrame.scripts.OnEvent(eventFrame, e, ...) end
 
 fire("ADDON_LOADED", "ForeverTracker")
@@ -160,3 +168,16 @@ for step = 1, 300 do -- 30 seconds at 10 Hz
 end
 f:close()
 print("frames written")
+
+-- Minimap code box: paste a code, press Enter -> saved and the UI reloads.
+FT.ShowCodeDialog()
+local box
+for _, fr in ipairs(frames) do
+	if fr.scripts.OnEnterPressed then box = fr end
+end
+assert(box, "code box not created")
+box.GetText = function() return "  bob-code-123 " .. string.char(10) end
+box.scripts.OnEnterPressed(box)
+assert(FT.db.settings.key == "bob-code-123", "code not saved: " .. tostring(FT.db.settings.key))
+assert(reloaded, "UI not reloaded after saving the code")
+print("minimap code box ok")

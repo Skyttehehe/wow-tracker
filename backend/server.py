@@ -12,7 +12,8 @@
 - everything else        static frontend
 
 Each character's data is kept apart. FT_TOKEN is the owner's key; friends get
-their own keys, and a character belongs to the key that first uploaded it.
+their own codes from FRIEND_KEYS (JSON, e.g. {"Bob": "code1", "Alice": "code2"})
+or from /api/admin/keys, and a character belongs to the code that first uploaded it.
 
 Standard library only. Configure with environment variables (see README).
 Runs as its own server (SQLite) or as a Vercel function (api/index.py, Redis).
@@ -48,6 +49,27 @@ INGEST_NETS = [ipaddress.ip_network(n.strip()) for n in os.environ.get(
 # the only check. Vercel functions end after each request, so there is no live stream.
 SERVERLESS = bool(os.environ.get("VERCEL"))
 PUBLIC_INGEST = SERVERLESS or os.environ.get("FT_PUBLIC_INGEST") == "1"
+
+
+def friend_codes():
+    """FRIEND_KEYS: JSON {"Bob": "code", ...} or [{"name": "Bob", "code": "..."}].
+    Read case-insensitively, so Friend_Keys works too."""
+    raw = next((v for k, v in os.environ.items() if k.upper() in ("FRIEND_KEYS", "FRIEND_KEY")), "")
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        print("FRIEND_KEYS is not valid JSON; ignoring it", flush=True)
+        return {}
+    if isinstance(data, list):
+        data = {d.get("name"): d.get("code") for d in data if isinstance(d, dict)}
+    if not isinstance(data, dict):
+        return {}
+    return {str(name): str(code) for name, code in data.items() if name and code}
+
+
+FRIENDS = friend_codes()
 PRESENCE_TIMEOUT = 120   # seconds without a heartbeat before showing offline
 MAX_BODY = 2 * 1024 * 1024
 
@@ -607,6 +629,9 @@ class Tracker:
             return None
         if TOKEN and hmac.compare_digest(token.encode(), TOKEN.encode()):
             return "owner"
+        for name, code in FRIENDS.items():
+            if hmac.compare_digest(token.encode(), code.encode()):
+                return f"friend:{name}"
         digest = hashlib.sha256(token.encode()).hexdigest()
         return digest[:12] if digest in (self.root.get("keys") or {}) else None
 
@@ -623,6 +648,7 @@ class Tracker:
         with self.root.transaction():
             keys, owners = self.root.get("keys") or {}, self.root.get("owners") or {}
         out = [{"id": "owner", "name": "FT_TOKEN (you)", "t": None}]
+        out += [{"id": f"friend:{n}", "name": f"{n} (FRIEND_KEYS)", "t": None} for n in FRIENDS]
         out += [{"id": d[:12], "name": k["name"], "t": k["t"]} for d, k in keys.items()]
         for k in out:
             k["characters"] = sorted(c for c, o in owners.items() if o == k["id"])

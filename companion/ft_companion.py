@@ -4,8 +4,11 @@
 Reads the in-game strip and the ForeverTracker SavedVariables file that WoW
 writes on reload, logout and exit, and forwards them to the tracker backend:
 backend_url from config.json (or the LAN address set in game), with the key
-from config.json. Without a config.json it asks for the key and finds the game
-by itself, and it installs or updates the addon on every start.
+from config.json or, for friends, the code entered in game (minimap button).
+
+Packaged as an exe that sits inside the addon folder: double-clicked once, it
+finds the game from its own location, starts silently with Windows from then
+on, and logs to companion.log next to it.
 Standard library only (Pillow for screen capture on Windows).
 """
 
@@ -36,7 +39,28 @@ GAME_PROCESS = re.compile(r"^wow(classic|forever|t|b)?(-64)?\.exe$|^world of war
 
 
 def log(msg):
-    print(time.strftime("%H:%M:%S"), msg, flush=True)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    if not FROZEN:
+        print(line[11:], flush=True)
+        return
+    # The exe has no console: keep a small log file next to it.
+    path = os.path.join(HERE, "companion.log")
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
+            os.replace(path, path + ".old")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def message_box(text, error=False):
+    """A Windows message box from the windowless exe (stdout elsewhere)."""
+    if FROZEN and sys.platform == "win32":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, "Forever Tracker", 0x10 if error else 0x40)
+    else:
+        print(text)
 
 
 # --- SavedVariables (Lua table literal) parser ------------------------------
@@ -232,6 +256,18 @@ def is_wow_root(path):
     return bool(path) and os.path.isdir(os.path.join(path, "_forever_"))
 
 
+def wow_from_location():
+    """The game folder when this runs from inside it (e.g. Interface/AddOns/ForeverTracker)."""
+    path = HERE
+    while True:
+        parent = os.path.dirname(path)
+        if os.path.basename(path).lower() == "_forever_":
+            return parent
+        if parent == path:
+            return None
+        path = parent
+
+
 def detect_wow_path():
     """The World of Warcraft folder that holds _forever_, or None."""
     candidates = []
@@ -257,24 +293,43 @@ def detect_wow_path():
 
 
 def first_run(path):
-    """Asks for what the companion can't find by itself and writes config.json."""
-    print("Forever Tracker companion: first-time setup\n")
-    wow = detect_wow_path()
-    if wow:
-        print(f"Found World of Warcraft in: {wow}")
-        answer = input("Press Enter to use it, or paste another folder: ").strip().strip('"')
-        wow = answer or wow
-    while not is_wow_root(wow):
-        wow = input("Paste your World of Warcraft folder (the one that contains _forever_): ").strip().strip('"')
-    token = ""
-    while not token:
-        token = input("Paste the key you were given: ").strip()
-    cfg = {"wow_path": wow, "backend_url": DEFAULT_BACKEND, "token": token,
+    """Finds the game and writes config.json. The code comes from the game."""
+    wow = wow_from_location() or detect_wow_path()
+    if not wow and not FROZEN:
+        while not is_wow_root(wow):
+            wow = input("Paste your World of Warcraft folder (the one that contains _forever_): ").strip().strip('"')
+    if not wow:
+        message_box("Couldn't find World of Warcraft.\n\nPut the ForeverTracker folder in\n"
+                    "World of Warcraft\\_forever_\\Interface\\AddOns\nand run "
+                    "ForeverTrackerCompanion.exe from there.", error=True)
+        sys.exit(1)
+    cfg = {"wow_path": wow, "backend_url": DEFAULT_BACKEND,
            "poll_seconds": 2, "live_seconds": 2, "heartbeat_seconds": 30}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-    print(f"\nSaved {path}. Delete it to run this setup again.\n")
+    log(f"first run: game in {wow}; saved {path}")
+    message_box("Forever Tracker is set up and now runs in the background. It starts by itself "
+                "with Windows, so you don't need to open it again.\n\nIn game, click the Forever "
+                "Tracker button on the minimap and paste the code you were given.")
     return cfg
+
+
+def single_instance():
+    """False when another copy is already running (Windows exe only)."""
+    if not (FROZEN and sys.platform == "win32"):
+        return True
+    import ctypes
+    single_instance.handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ForeverTrackerCompanion")
+    return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+
+
+def autostart(cfg):
+    """Starts the exe with Windows (per user, no admin), wherever it lives now."""
+    if not (FROZEN and sys.platform == "win32") or cfg.get("autostart") is False:
+        return
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+        winreg.SetValueEx(k, "ForeverTracker", 0, winreg.REG_SZ, f'"{sys.executable}"')
 
 
 def addon_version(folder):
@@ -316,7 +371,6 @@ class Companion:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.token = cfg["token"]
         self.poll = cfg.get("poll_seconds", 2)
         self.heartbeat_every = cfg.get("heartbeat_seconds", 30)
         self.live_every = cfg.get("live_seconds", self.LIVE_EVERY)
@@ -346,6 +400,11 @@ class Companion:
         self.last_hidden_post = 0
         self.live_logged = False
         self.combat_log = combatlog.CombatLogTail(cfg["wow_path"]) if cfg.get("wow_path") else None
+
+    @property
+    def token(self):
+        """config.json's token (the owner), else the code entered in game."""
+        return self.cfg.get("token") or self.settings().get("key")
 
     def settings(self):
         return (self.db or {}).get("settings") or {}
@@ -405,13 +464,15 @@ class Companion:
         who = self.character()
         if not who:
             return True  # nothing to attach it to until the game tells us who's playing
+        if not self.token:
+            self.problem("no code yet: click the Forever Tracker button on the minimap and enter it")
+            return True
         try:
             post(url, self.token, {**payload, "character": who})
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
-                self.problem("the backend doesn't accept this key; check token in config.json "
-                             "(or run with --setup)")
+                self.problem("the site doesn't accept this code; enter it again with the minimap button")
             elif exc.code == 403:
                 self.problem(f"{who['name']} is already tracked with someone else's key")
             else:
@@ -573,15 +634,19 @@ def main():
     ap.add_argument("--config", default=os.path.join(HERE, "config.json"))
     ap.add_argument("--dump", action="store_true",
                     help="parse the SavedVariables file once, print the payload and exit")
-    ap.add_argument("--setup", action="store_true", help="ask for the key and game folder again")
+    ap.add_argument("--setup", action="store_true", help="find the game folder again")
     args = ap.parse_args()
 
+    if not args.dump and not single_instance():
+        message_box("Forever Tracker is already running in the background.")
+        return
     if args.setup or not os.path.isfile(args.config):
         cfg = first_run(args.config)
     else:
         with open(args.config, encoding="utf-8") as f:
             cfg = json.load(f)
     install_addon(cfg)
+    autostart(cfg)
 
     if args.dump:
         path = find_saved_variables(cfg)

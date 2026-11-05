@@ -398,10 +398,14 @@ SlashCmdList.FOREVERTRACKER = function(msg)
 		FT.Print(FT.StatusText())
 	elseif cmd == "debug" then
 		FT.Debug()
+	elseif cmd == "code" or cmd == "key" then
+		FT.ShowCodeDialog()
+	elseif cmd == "minimap" then
+		FT.SetSetting("minimapHidden", not FT.db.settings.minimapHidden)
 	elseif cmd == "" or cmd == "config" or cmd == "options" then
 		ForeverTracker_ToggleOptions()
 	else
-		FT.Print("/ft [options|sync|on|off|hide|show|ip <addr>|status|debug]")
+		FT.Print("/ft [options|code|minimap|sync|on|off|hide|show|ip <addr>|status|debug]")
 	end
 end
 

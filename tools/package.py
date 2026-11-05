@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Builds dist/ForeverTracker-<version>.zip to hand to friends (Windows).
 
-Inside: ForeverTrackerCompanion.exe (Python and Pillow bundled, the addon
-inside it; on first run it finds WoW, installs the addon and asks for the
-friend's key), the ForeverTracker addon folder for installing by hand, and
-README.txt.
+The zip is a normal addon folder, ForeverTracker/, that goes into
+Interface/AddOns. Next to the addon files it holds ForeverTrackerCompanion.exe
+(windowless; Python and Pillow bundled) and README.txt. Double-clicked once,
+the exe finds the game from its own location and starts with Windows from then
+on; the friend enters their code in game with the minimap button.
 
 Needs PyInstaller and Pillow in the Python that runs this:
   python -m pip install pyinstaller pillow
@@ -24,42 +25,43 @@ BUILD = os.path.join(ROOT, "build")
 DIST = os.path.join(ROOT, "dist")
 EXE = "ForeverTrackerCompanion"
 
-README = """Forever Tracker - {version}
-=========================
+README = """Forever Tracker {version}
+=====================
 
 Shows your character live on {site} : level, XP, zone and map, quests,
-gear and what you're fighting. Your friends can see you there.
-
-You need the key you were given (one per person; don't share it).
+gear and what you're fighting.
 
 Setup (once)
 ------------
-1. Unzip this folder anywhere, e.g. your Documents.
-2. Double-click ForeverTrackerCompanion.exe.
-   - It finds your World of Warcraft folder (or asks for it).
-   - It installs the Forever Tracker addon into WoW.
-   - It asks for your key. Paste it and press Enter.
+1. Put this ForeverTracker folder in
+      World of Warcraft\\_forever_\\Interface\\AddOns
+   like any other addon.
+2. In that folder, double-click ForeverTrackerCompanion.exe.
    Windows may warn about an unknown app: More info -> Run anyway.
-3. Restart WoW. At character select, AddOns: make sure Forever Tracker is ticked.
+   It says it's set up, then runs in the background and starts by itself
+   with Windows from now on. You never need to open it again.
+3. Start WoW (tick Forever Tracker under AddOns if it isn't), log in, click
+   the Forever Tracker button on the minimap and paste the code you were given.
 
-Every time you play
--------------------
-Start ForeverTrackerCompanion.exe and leave its window open while you play.
-Your character shows up on {site} within a few seconds.
+That's it: you show up on {site} within a few seconds whenever you play.
 
 In game
 -------
-/ft opens the options. "Appear offline" hides you right away; untick
-"Enable tracking" to stop completely. A tiny strip of coloured pixels in the
-top-left corner carries the live data to the companion; leave it visible.
-Turning on "Share health from the combat log" also shows your health.
+Minimap button: left-click to enter your code, right-click for options,
+drag to move it. /ft minimap hides or shows it.
+/ft opens the options: "Appear offline" hides you right away; untick
+"Enable tracking" to stop completely. "Share health from the combat log"
+also shows your health on the site.
+A tiny strip of coloured pixels in the top-left corner carries the live data
+to the companion; leave it visible.
 
 Problems
 --------
-- "doesn't accept this key": check the key; run the exe with --setup, or
-  delete config.json next to it, to enter it again.
 - Nothing shows up: keep WoW on your main monitor and not minimised, and
-  type /reload in game once.
+  check that the code is right (minimap button). companion.log in this
+  folder says what's going on.
+- To stop it starting with Windows: Task Manager -> Startup apps ->
+  ForeverTracker -> Disable.
 """
 
 
@@ -76,7 +78,7 @@ def site():
 def main():
     ver = version()
     subprocess.run([
-        sys.executable, "-m", "PyInstaller", "--onefile", "--noconfirm", "--clean", "--console",
+        sys.executable, "-m", "PyInstaller", "--onefile", "--noconfirm", "--clean", "--noconsole",
         "--name", EXE,
         "--distpath", os.path.join(BUILD, "exe"), "--workpath", os.path.join(BUILD, "work"),
         "--specpath", BUILD,
@@ -88,12 +90,11 @@ def main():
 
     os.makedirs(DIST, exist_ok=True)
     out = os.path.join(DIST, f"ForeverTracker-{ver}.zip")
-    top = f"ForeverTracker-{ver}"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(os.path.join(BUILD, "exe", EXE + ".exe"), f"{top}/{EXE}.exe")
         for name in sorted(os.listdir(ADDON)):
-            z.write(os.path.join(ADDON, name), f"{top}/ForeverTracker/{name}")
-        z.writestr(f"{top}/README.txt", README.format(version=ver, site=site()).replace("\n", "\r\n"))
+            z.write(os.path.join(ADDON, name), f"ForeverTracker/{name}")
+        z.write(os.path.join(BUILD, "exe", EXE + ".exe"), f"ForeverTracker/{EXE}.exe")
+        z.writestr("ForeverTracker/README.txt", README.format(version=ver, site=site()).replace("\n", "\r\n"))
     shutil.rmtree(os.path.join(BUILD, "work"), ignore_errors=True)
     # The site's footer links to releases/latest/download/ForeverTracker.zip.
     shutil.copyfile(out, os.path.join(DIST, "ForeverTracker.zip"))

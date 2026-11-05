@@ -106,20 +106,31 @@ Differences from running it yourself:
 #### Friends on the same site
 
 Everyone's characters can share one site: a row at the top picks who to watch, and `?c=<name>` links straight
-to a character (e.g. `wow.osrs.dk/?c=fractured`). Each friend gets their own upload key, so nobody can overwrite
-someone else's character; a character belongs to the key that first uploaded it. Your `FT_TOKEN` is the owner key
-and can upload anything.
+to a character (e.g. `wow.osrs.dk/?c=fractured`). A character belongs to the code that first uploaded it, so
+friends can't overwrite each other. Your `FT_TOKEN` is the owner key: it can upload anything and manage the site.
 
-```bash
-python tools/friends.py add "Bob"      # prints Bob's key once; send it to him privately
-python tools/friends.py list           # keys and their characters
-python tools/friends.py remove <id>    # revoke a key
-python tools/friends.py hide <character-id>
+**Friend codes** go in one Vercel environment variable, `FRIEND_KEYS`, as JSON (then redeploy):
+
+```json
+{"Bob": "a-long-random-code", "Alice": "another-long-random-code"}
 ```
 
-`tools/friends.py` uses `backend_url` and your `FT_TOKEN` from `companion/config.json`.
+`python -c "import secrets; print(secrets.token_urlsafe(18))"` makes a good code. Removing a name revokes it.
+`python tools/friends.py list` shows each code's characters; `hide <character-id>` takes one off the site.
+(`tools/friends.py add` can also create codes stored in the database instead of the environment variable.)
 
-To build the package friends need (Windows):
+**What a friend does** (Windows):
+
+1. Download the zip from the site's footer (*Get the addon*) and put the `ForeverTracker` folder in
+   `World of Warcraft\_forever_\Interface\AddOns`, like any addon.
+2. Double-click `ForeverTrackerCompanion.exe` in that folder once. It has no window: it confirms it's set up and
+   from then on starts silently with Windows (it logs to `companion.log` next to it).
+3. In game, click the Forever Tracker button on the minimap and paste their code. The UI reloads once to save it.
+
+The exe is needed because addons can't reach the network; it reads the in-game strip and the saved file and
+uploads them. Every friend's uploads count towards the same Upstash command budget.
+
+**Building and publishing the package:**
 
 ```bash
 python -m pip install pyinstaller pillow
@@ -127,10 +138,8 @@ python tools/package.py                # -> dist/ForeverTracker-<version>.zip an
 gh release create v<version> dist/ForeverTracker.zip dist/ForeverTracker-<version>.zip
 ```
 
-The site's footer links to `releases/latest/download/ForeverTracker.zip`, so publishing a new release updates the
-download for everyone. The zip holds `ForeverTrackerCompanion.exe` (Python bundled; on first run it finds WoW, installs the addon and asks
-for the key), the addon folder for installing by hand, and a README for your friend. Each friend's uploads count
-towards the same Upstash command budget, so with several people playing, keep an eye on usage.
+The site's footer links to `releases/latest/download/ForeverTracker.zip`, so a new release updates the download.
+When a friend runs a newer exe, it also updates the addon files next to it.
 
 #### On your own server (Proxmox CT)
 

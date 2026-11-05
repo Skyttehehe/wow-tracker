@@ -1,7 +1,7 @@
 {
   "wow_path": "/path/to/World of Warcraft",
   "backend_url": "https://wow.osrs.dk",
-  "token": "your key: FT_TOKEN for the owner, or a friend key from tools/friends.py",
+  "token": "FT_TOKEN for the owner; friends leave this out and enter their code in game",
   "poll_seconds": 2,
   "live_seconds": 2,
   "heartbeat_seconds": 30
