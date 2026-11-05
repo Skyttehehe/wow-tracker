@@ -224,6 +224,7 @@ h2 { font-size: 16px; color: var(--gold); }
 .empty { color: var(--muted); padding: 16px 0; }
 
 .foot { margin-top: 28px; text-align: center; }
+.foot a { color: var(--gold); }
 
 /* equipment */
 .gear-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
