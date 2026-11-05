@@ -255,6 +255,8 @@ local function refresh()
 		db.snapshot = nil
 		db.quests = nil
 		db.gear = nil
+		db.professions = nil
+		FT.professionsKey = nil
 		FT.current = nil
 		return
 	end
@@ -274,6 +276,20 @@ local function refresh()
 		FT.gearIncomplete = incomplete
 		db.gear = items
 		FT.gearVersion = (FT.gearVersion or 0) + 1
+	end
+	-- Professions: on their events and every 20 s as a safety net; only kept
+	-- (and sent on) when something changed.
+	if FT.ReadProfessions and (FT.professionsDirty or GetTime() - (FT.professionsChecked or 0) >= 20) then
+		FT.professionsDirty = false
+		FT.professionsChecked = GetTime()
+		local list = FT.ReadProfessions()
+		local key = list and FT.ProfessionsKey(list)
+		if list and key ~= FT.professionsKey then
+			-- No journal entries for the first read after login (nothing changed).
+			if FT.professionsKey then FT.RecordSkillUps(db.professions, list) end
+			FT.professionsKey, db.professions = key, list
+			FT.professionsVersion = (FT.professionsVersion or 0) + 1
+		end
 	end
 	local t = now()
 	if t - lastPositionSample >= POSITION_EVERY then
@@ -313,6 +329,7 @@ function handlers.PLAYER_ENTERING_WORLD(isInitialLogin, isReload)
 	leaving = false
 	FT.questsDirty = true
 	FT.gearDirty = true
+	FT.professionsDirty = true
 	-- Zone text isn't ready on the first frame of a login.
 	C_Timer.After(2, function()
 		lastZone = lastZone or read("zone", GetRealZoneText)
@@ -427,6 +444,8 @@ function FT.Debug()
 	if FT.ReadQuestLog then
 		FT.Print(string.format("%d quests in log", #FT.ReadQuestLog()))
 	end
+	if FT.ProfessionsDebug then FT.ProfessionsDebug() end
+	if FT.Jumps then FT.Print(string.format("jumps: %d", FT.Jumps())) end
 end
 
 function FT.StatusText()

@@ -270,6 +270,14 @@ def endpoint_url(endpoint):
     return f"http://{ip}:{int(m.group(2) or 8787)}/api/ingest"
 
 
+def expand_professions(payload):
+    """The strip's compact rows [name, rank, max, bonus, secondary] -> dicts
+    (an empty list arrives as {})."""
+    rows = [r for r in payload if isinstance(r, list) and len(r) >= 5] if isinstance(payload, list) else []
+    return [{"name": r[0], "rank": r[1], "max": r[2] or None, "bonus": r[3] or None, "secondary": bool(r[4])}
+            for r in rows]
+
+
 def post(url, token, payload):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST", headers={
@@ -626,6 +634,10 @@ class Companion:
         self.gear = None
         self.gear_dirty = False
         self.target = None
+        self.professions = None
+        self.professions_dirty = False
+        self.jumps = None
+        self.jumps_dirty = False
         self.events = []
         self.last_live_post = 0
         self.last_hidden_post = 0
@@ -662,6 +674,8 @@ class Companion:
             "xp": self.db.get("xp") or [],
             "quests": self.db.get("quests"),
             "gear": self.db.get("gear"),
+            "professions": self.db.get("professions"),
+            "jumps": (self.db.get("jumps") or {}).get(f"{snap.get('name')}-{snap.get('realm') or ''}"),
         }
 
     def ingest_url(self):
@@ -759,6 +773,14 @@ class Companion:
                 self.quests, self.quests_dirty = payload, True
         elif kind == "T":
             self.target = payload or None
+        elif kind == "P":
+            professions = expand_professions(payload)
+            if professions != self.professions:
+                self.professions, self.professions_dirty = professions, True
+        elif kind == "J":
+            n = payload.get("n") if isinstance(payload, dict) else None
+            if isinstance(n, int) and n != self.jumps:
+                self.jumps, self.jumps_dirty = n, True
         elif kind == "G":
             if payload != self.gear:
                 self.gear, self.gear_dirty = payload, True
@@ -811,10 +833,16 @@ class Companion:
             payload["quests"] = self.quests
         if self.gear_dirty:
             payload["gear"] = self.gear
+        if self.professions_dirty:
+            payload["professions"] = self.professions
+        if self.jumps_dirty:
+            payload["jumps"] = self.jumps
         if self.send(payload):
             self.events = []
             self.quests_dirty = False
             self.gear_dirty = False
+            self.professions_dirty = False
+            self.jumps_dirty = False
             self.last_heartbeat = now
 
     # --- main loop -----------------------------------------------------------

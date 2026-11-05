@@ -57,6 +57,7 @@ Slash commands: `/ft sync | on | off | hide | show | ip <addr> | status | debug`
 Recorded: name, realm, race, class, level, XP, rested XP, health, power (mana/rage/energy), gold, guild,
 equipped gear (name, quality, item level per slot),
 your current enemy target (name, level, elite/rare, health; other players by class and level only),
+professions and secondary skills (with journal entries every 5 points), a jump counter,
 zone/subzone, map coordinates, and combat/resting/dead flags. It also keeps a position trail (sampled every 5 s
 when you move), XP samples, and a journal of level-ups, deaths, zone changes, quest turn-ins and logins. Each
 list is a capped ring buffer, so the file stays small.

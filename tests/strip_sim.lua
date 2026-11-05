@@ -15,7 +15,21 @@ function GetServerTime() return clock end
 function GetTime() return gtime end
 time = function() return clock end
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
-function hooksecurefunc() end
+local hooks = {}
+function hooksecurefunc(name, fn) if type(name) == "string" then hooks[name] = fn end end
+function JumpOrAscendStart() if hooks.JumpOrAscendStart then hooks.JumpOrAscendStart() end end
+local swimming = false
+function IsSwimming() return swimming end
+function IsFlying() return false end
+
+-- Skills pane (classic API): Mining levels up during the run.
+local skills = {
+	{ "Professions", true, true }, { "Mining", false, false, 1, 0, 0, 75 },
+	{ "Secondary Skills", true, true }, { "Cooking", false, false, 12, 0, 0, 75 },
+	{ "Weapon Skills", true, true }, { "Swords", false, false, 40, 0, 0, 60 },
+}
+function GetNumSkillLines() return #skills end
+function GetSkillLineInfo(i) return unpack(skills[i]) end
 function GetPhysicalScreenSize() return 2560, 1440 end
 
 local function texture()
@@ -130,6 +144,8 @@ load("Core.lua")
 load("Quests.lua")
 load("Gear.lua")
 load("Target.lua")
+load("Professions.lua")
+load("Jumps.lua")
 -- Target-aware unit functions (the addon captured nothing at load time).
 local baseName, baseLevel, baseClass = UnitName, UnitLevel, UnitClass
 UnitName = function(u) if u == "target" then return T and T.name end return baseName(u) end
@@ -162,6 +178,10 @@ for step = 1, 300 do -- 30 seconds at 10 Hz
 	if step == 140 then T.dead = true end
 	if step == 160 then T = { player = true, name = "Stelfi", class = "Druid", level = 12, guid = "Player-1-00BEEF" } end
 	if step == 260 then T = nil end
+	if step == 100 then skills[2][4] = 5; fire("SKILL_LINES_CHANGED") end
+	if step == 30 or step == 40 or step == 41 then JumpOrAscendStart() end  -- 41: same press mid-air
+	if step == 60 then swimming = true; JumpOrAscendStart(); swimming = false end
+	if step == 70 then JumpOrAscendStart() end
 	if step == 200 then gear[17] = { 2129, "Large Round Shield", 2, 7 }; fire("PLAYER_EQUIPMENT_CHANGED", 17, false) end
 	local bytes = FT.StripEncode()
 	for i = 0, 170 do f:write(string.char(bytes[i])) end

@@ -80,7 +80,7 @@ SNAPSHOT_FIELDS = {
     "money", "guild", "dead", "ghost", "resting", "combat", "zone", "subzone",
     "mapID", "map", "x", "y", "vitalsAt", "vitalsAssumed",
 }
-EVENT_FIELDS = {"t", "type", "level", "zone", "subzone", "x", "y", "mapID",
+EVENT_FIELDS = {"t", "type", "level", "zone", "subzone", "x", "y", "mapID", "skill", "rank", "max", "learned",
                 "questID", "title", "xp", "money"}
 IDENTITY_FIELDS = {"name", "surname", "realm", "faction", "race", "class", "classToken", "sex", "guild", "maxLevel"}
 ZONE_FIELDS = {"zone", "subzone", "map"}
@@ -180,6 +180,17 @@ def clean_target(t):
 
 
 GEAR_SLOTS = set(range(1, 20))
+
+
+def clean_professions(items):
+    """Professions and secondary skills (ported from upstream)."""
+    num = lambda v: v if isinstance(v, int) and not isinstance(v, bool) else None  # noqa: E731
+    out = []
+    for p in (items if isinstance(items, list) else [])[:12]:
+        if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
+            out.append({"name": p["name"][:60], "rank": num(p.get("rank")), "max": num(p.get("max")),
+                        "bonus": num(p.get("bonus")), "secondary": bool(p.get("secondary"))})
+    return out
 
 
 def clean_gear(items):
@@ -293,6 +304,7 @@ class Store:
             history = True
         if "gear" in payload:
             self.put("gear", {"t": now, "items": clean_gear(payload["gear"])})
+        self.put_sheet_extras(payload, now)
         if snap.get("name"):
             self.put("snapshot", snap)
             self.put("updatedAt", now)
@@ -375,6 +387,7 @@ class Store:
                         self.put("quests", {"t": now, "list": clean_quests(payload["quests"])})
                     if payload.get("gear") is not None:
                         self.put("gear", {"t": now, "items": clean_gear(payload["gear"])})
+                    self.put_sheet_extras(payload, now)
                 history = True
                 self.add_events(payload.get("events"))
                 self.insert_positions([
@@ -394,6 +407,14 @@ class Store:
         self.notify(history)
         return summary
 
+    def put_sheet_extras(self, payload, now):
+        """Professions and the jump counter, when the upload carries them."""
+        if payload.get("professions") is not None:
+            self.put("professions", {"t": now, "items": clean_professions(payload["professions"])})
+        jumps = payload.get("jumps")
+        if isinstance(jumps, int) and not isinstance(jumps, bool) and jumps >= 0:
+            self.put("jumps", {"t": now, "n": jumps})
+
     def state(self, quests=True):
         with self.transaction():
             presence = self.get("presence") or {"online": False, "t": 0}
@@ -403,6 +424,8 @@ class Store:
             history_at = self.get("historyAt")
             quest_state = self.get("quests") if quests else None
             gear = self.get("gear") if quests else None
+            professions = self.get("professions") if quests else None
+            jumps = (self.get("jumps") or {}).get("n")
         now = int(time.time())
         online = presence["online"] and now - presence["t"] < PRESENCE_TIMEOUT
         state = {
@@ -412,6 +435,7 @@ class Store:
             "presenceAt": presence["t"],
             "updatedAt": updated,
             "historyAt": history_at,
+            "jumps": jumps,
             # Without a stream (Vercel) the page polls instead.
             "stream": not SERVERLESS,
             "snapshot": snapshot,
@@ -419,6 +443,7 @@ class Store:
         if quests:
             state["quests"] = quest_state
             state["gear"] = gear
+            state["professions"] = professions
         return state
 
     def history(self, limit_positions=500, limit_events=150):

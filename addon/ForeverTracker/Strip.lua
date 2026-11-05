@@ -14,7 +14,7 @@
 --   49-166 chunk bytes         167  health %   168  power %
 --   169-170 Fletcher-16 of bytes 0-168
 --
--- Messages (identity, zone, quest log, gear, target, journal events) are JSON prefixed with
+-- Messages (identity, zone, quest log, gear, professions, jumps, target, journal events) are JSON prefixed with
 -- a type letter, split into chunks and shown one chunk per HOLD interval.
 -- Unreadable (secret) values have their valid bit cleared and are sent as 0.
 
@@ -76,6 +76,7 @@ local lastSent = {}    -- type -> time last queued
 local lastQuests
 local lastGear
 local lastTarget
+local lastProfessions, lastJumps
 
 local function enqueue(kind, payload)
 	local data = kind .. json(payload)
@@ -118,6 +119,22 @@ local function schedule()
 	if FT.db.gear and (FT.gearVersion ~= lastGear or not lastSent.G or now - lastSent.G > 120) then
 		lastGear = FT.gearVersion
 		enqueue("G", FT.db.gear)
+	end
+	-- Professions as compact rows: [name, rank, max, bonus, secondary 0/1].
+	if FT.db.professions and (FT.professionsVersion ~= lastProfessions or not lastSent.P or now - lastSent.P > 120) then
+		lastProfessions = FT.professionsVersion
+		local rows = {}
+		for i, p in ipairs(FT.db.professions) do
+			rows[i] = { p.name, p.rank or 0, p.max or 0, p.bonus or 0, p.secondary and 1 or 0 }
+		end
+		enqueue("P", rows)
+	end
+	-- Jumps: within 2 s of a change, and every minute.
+	local jumps = FT.Jumps and FT.Jumps() or 0
+	local sinceJ = lastSent.J and now - lastSent.J or math.huge
+	if jumps > 0 and ((jumps ~= lastJumps and sinceJ >= 2) or sinceJ > 60) then
+		lastJumps = jumps
+		enqueue("J", { n = jumps })
 	end
 	-- Target: on change (at most twice a second) and every 15 s; {} means none.
 	local target = FT.ReadTarget and FT.ReadTarget()

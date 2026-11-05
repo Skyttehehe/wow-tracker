@@ -9,7 +9,7 @@ const POWER = {
   MANA: ["Mana", "var(--mana)"], RAGE: ["Rage", "var(--rage)"],
   ENERGY: ["Energy", "var(--energy)"], FOCUS: ["Focus", "var(--focus)"],
 };
-const EVENT_ICONS = { level: "★", death: "☠", zone: "⚑", quest: "✔", accept: "!", abandon: "✕", login: "⏻" };
+const EVENT_ICONS = { level: "★", death: "☠", zone: "⚑", quest: "✔", accept: "!", abandon: "✕", login: "⏻", skill: "⚒" };
 const FILTER_GROUPS = { quest: ["quest", "accept", "abandon"] };
 const SESSION_GAP = 15 * 60; // seconds; longer gaps count as a break
 const POLL_SECONDS = 3;       // update rate when the backend has no stream (Vercel)
@@ -166,6 +166,7 @@ function renderProgress(s) {
   $("ttl").textContent = rate && known && !atCap ? duration((s.xpMax - s.xp) / rate * 3600) : "–";
   $("money").innerHTML = money(s.money);
   $("deaths").textContent = history.events.filter((e) => e.type === "death").length;
+  $("jumps").textContent = state?.jumps != null ? fmt.format(state.jumps) : "–";
 }
 
 // Exact values when the game allows it, else its percentage. Returns false when
@@ -537,6 +538,51 @@ function renderGear() {
   $("gear-note").textContent = items.length ? "Hover an item for its tooltip" : "No equipment received yet";
 }
 
+// --- professions (ported from upstream) ------------------------------------------
+
+const PROF_ICONS = {
+  alchemy: "trade_alchemy", blacksmithing: "trade_blacksmithing", enchanting: "trade_engraving",
+  engineering: "trade_engineering", herbalism: "trade_herbalism", leatherworking: "trade_leatherworking",
+  mining: "trade_mining", skinning: "inv_misc_pelt_wolf_01", tailoring: "trade_tailoring",
+  jewelcrafting: "inv_misc_gem_01", inscription: "inv_inscription_tradeskill01",
+  cooking: "inv_misc_food_15", "first aid": "spell_holy_sealofsacrifice", fishing: "trade_fishing",
+};
+
+// The training tier a skill cap belongs to.
+function tier(max) {
+  return max <= 75 ? "Apprentice" : max <= 150 ? "Journeyman" : max <= 225 ? "Expert" : "Artisan";
+}
+
+function profHtml(p) {
+  const icon = PROF_ICONS[p.name.toLowerCase()];
+  const maxed = p.max && p.rank >= p.max;
+  return `<div class="prof">
+    <span class="prof-icon">${icon ? `<img src="${ICON_URL(icon)}" alt="" loading="lazy" onerror="this.remove()">` : ""}<span>${esc(p.name.charAt(0))}</span></span>
+    <div>
+      <div class="vital-label">
+        <span>${esc(p.name)}${p.max ? `<span class="tier">${tier(p.max)}</span>` : ""}</span>
+        <span>${p.rank ?? "–"}${p.bonus ? ` <span class="bonus">(+${p.bonus})</span>` : ""}${p.max ? ` / ${p.max}` : ""}</span>
+      </div>
+      <div class="bar skill${maxed ? " maxed" : ""}"><div class="fill" style="width:${p.max ? pct(p.rank, p.max) : 0}%"></div></div>
+    </div>
+  </div>`;
+}
+
+function renderProfessions() {
+  const list = state?.professions?.items;
+  if (!changed("professions", list ?? null)) return;
+  if (!list) {
+    $("prof-list").innerHTML = `<p class="empty">No professions received yet.</p>`;
+    $("prof-note").textContent = "";
+    return;
+  }
+  const primary = list.filter((p) => !p.secondary);
+  const secondary = list.filter((p) => p.secondary);
+  $("prof-note").textContent = `${primary.length} of 2 professions`;
+  $("prof-list").innerHTML = (primary.length ? primary.map(profHtml).join("") : `<p class="empty">No professions learned.</p>`)
+    + (secondary.length ? `<div class="prof-group">Secondary skills</div>${secondary.map(profHtml).join("")}` : "");
+}
+
 function describe(e) {
   switch (e.type) {
     case "level": return [`Reached level ${e.level}`, e.zone];
@@ -547,6 +593,8 @@ function describe(e) {
     case "accept": return [e.title || `Quest #${e.questID}`, "Accepted"];
     case "abandon": return [e.title || `Quest #${e.questID}`, "Abandoned"];
     case "login": return ["Logged in", [e.zone, e.level && `Level ${e.level}`].filter(Boolean).join(" · ")];
+    case "skill": return [e.learned ? `Learned ${e.skill}` : `${e.skill} reached ${e.rank}`,
+      e.max ? `${e.rank} / ${e.max} · ${tier(e.max)}` : ""];
     default: return [e.type, ""];
   }
 }
@@ -584,6 +632,7 @@ function renderAll() {
   renderPresence();
   renderQuests();
   renderGear();
+  renderProfessions();
   const s = state?.snapshot;
   if (!s) return;
   renderLive();
@@ -668,6 +717,7 @@ async function load(all = true) {
       renderPresence();
       renderQuests();
       renderGear();
+      renderProfessions();
       if (st.snapshot) renderLive();
     }
   } catch (err) {
@@ -681,10 +731,11 @@ function connect() {
   const es = stream = new EventSource(`api/stream?${forChar()}`);
   es.addEventListener("update", load);
   es.addEventListener("live", (ev) => {
-    const { quests, gear } = state || {};
+    const { quests, gear, professions } = state || {};
     state = JSON.parse(ev.data);
     state.quests = quests;
     state.gear = gear;
+    state.professions = professions;
     renderLive();
   });
   // After a dropped connection, catch up on anything missed.
