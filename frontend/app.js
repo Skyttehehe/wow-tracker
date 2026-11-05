@@ -184,23 +184,18 @@ function setBar(fill, text, cur, max, percent) {
 
 const RANKS = { elite: "Elite", rare: "Rare", rareelite: "Rare elite", worldboss: "Boss" };
 
-// What the character is fighting: their current attackable target.
+// What the character is fighting: their current target, only while in combat
+// with it (not a mob that's merely targeted or already dead).
 function renderTarget(s) {
   const t = s.target;
-  $("target").hidden = !(t && state.live);
+  $("target").hidden = !(t && state.live && s.combat && !t.dead);
   if ($("target").hidden) return;
   const level = t.level === -1 ? "??" : t.level;
   const who = t.player ? `${t.class || "Player"} (player)` : t.name || "Unknown";
-  $("target-who").innerHTML = `${s.combat ? "Fighting" : "Targeting"} <span class="who">${esc(who)}</span>`
+  $("target-who").innerHTML = `Fighting <span class="who">${esc(who)}</span>`
     + `${level != null ? ` · Lv ${level}` : ""}${t.rank ? `<span class="rank">${RANKS[t.rank]}</span>` : ""}`;
-  let known = true;
-  if (t.dead) {
-    $("target-fill").style.width = "0%";
-    $("target-text").textContent = "Defeated";
-  } else {
-    known = setBar("target-fill", "target-text", t.health, t.healthMax, t.pct);
-  }
   // No health yet (secret, and not in the combat log): just the name line.
+  const known = setBar("target-fill", "target-text", t.health, t.healthMax, t.pct);
   $("target-fill").parentElement.hidden = !known;
   $("target-text").hidden = !known;
 }
