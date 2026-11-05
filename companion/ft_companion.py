@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Forever Tracker companion.
 
-Watches the ForeverTracker SavedVariables file that WoW writes on reload,
-logout and exit, and forwards it to the tracker backend on the LAN. The
-backend address comes from the addon's in-game setting; the shared token comes
-from config.json next to this script. Standard library only.
+Reads the in-game strip and the ForeverTracker SavedVariables file that WoW
+writes on reload, logout and exit, and forwards them to the tracker backend:
+backend_url from config.json (or the LAN address set in game), with the key
+from config.json. Without a config.json it asks for the key and finds the game
+by itself, and it installs or updates the addon on every start.
+Standard library only (Pillow for screen capture on Windows).
 """
 
 import argparse
@@ -13,6 +15,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +25,12 @@ import urllib.request
 import combatlog
 import strip
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# Packaged as an exe (tools/package.py): config next to the exe, addon bundled inside.
+FROZEN = getattr(sys, "frozen", False)
+HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
+ADDON_SRC = (os.path.join(sys._MEIPASS, "addon", "ForeverTracker") if FROZEN
+             else os.path.join(HERE, "..", "addon", "ForeverTracker"))
+DEFAULT_BACKEND = "https://wow.osrs.dk"
 SV_NAME = "ForeverTracker.lua"
 GAME_PROCESS = re.compile(r"^wow(classic|forever|t|b)?(-64)?\.exe$|^world of warcraft", re.I)
 
@@ -218,6 +226,87 @@ def post(url, token, payload):
         return resp.status
 
 
+# --- first run and addon install -------------------------------------------------
+
+def is_wow_root(path):
+    return bool(path) and os.path.isdir(os.path.join(path, "_forever_"))
+
+
+def detect_wow_path():
+    """The World of Warcraft folder that holds _forever_, or None."""
+    candidates = []
+    if sys.platform == "win32":
+        try:
+            import winreg
+            for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft"),
+                              (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Blizzard Entertainment\World of Warcraft")):
+                try:
+                    with winreg.OpenKey(hive, key) as k:
+                        install = winreg.QueryValueEx(k, "InstallPath")[0].rstrip("\\/")
+                except OSError:
+                    continue
+                # InstallPath points at a flavour folder such as ..._forever_
+                candidates += [os.path.dirname(install), install]
+        except ImportError:
+            pass
+        for drive in "CDEFG":
+            candidates += [f"{drive}:\\Program Files (x86)\\World of Warcraft",
+                           f"{drive}:\\Program Files\\World of Warcraft", f"{drive}:\\World of Warcraft",
+                           f"{drive}:\\Games\\World of Warcraft"]
+    return next((c for c in candidates if is_wow_root(c)), None)
+
+
+def first_run(path):
+    """Asks for what the companion can't find by itself and writes config.json."""
+    print("Forever Tracker companion: first-time setup\n")
+    wow = detect_wow_path()
+    if wow:
+        print(f"Found World of Warcraft in: {wow}")
+        answer = input("Press Enter to use it, or paste another folder: ").strip().strip('"')
+        wow = answer or wow
+    while not is_wow_root(wow):
+        wow = input("Paste your World of Warcraft folder (the one that contains _forever_): ").strip().strip('"')
+    token = ""
+    while not token:
+        token = input("Paste the key you were given: ").strip()
+    cfg = {"wow_path": wow, "backend_url": DEFAULT_BACKEND, "token": token,
+           "poll_seconds": 2, "live_seconds": 2, "heartbeat_seconds": 30}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"\nSaved {path}. Delete it to run this setup again.\n")
+    return cfg
+
+
+def addon_version(folder):
+    try:
+        with open(os.path.join(folder, "ForeverTracker.toc"), encoding="utf-8") as f:
+            m = re.search(r"^## Version:\s*(\S+)", f.read(), re.M)
+            return m and m.group(1)
+    except OSError:
+        return None
+
+
+def install_addon(cfg):
+    """Copies the bundled addon into the game when it's missing or different."""
+    if cfg.get("install_addon") is False or not os.path.isdir(ADDON_SRC):
+        return
+    forever = os.path.join(cfg.get("wow_path", ""), "_forever_")
+    if not os.path.isdir(forever):
+        log(f"no _forever_ folder in {cfg.get('wow_path')!r}; install the addon by hand")
+        return
+    dest = os.path.join(forever, "Interface", "AddOns", "ForeverTracker")
+    same = os.path.isdir(dest) and all(
+        os.path.isfile(os.path.join(dest, name))
+        and open(os.path.join(ADDON_SRC, name), "rb").read() == open(os.path.join(dest, name), "rb").read()
+        for name in os.listdir(ADDON_SRC))
+    if same:
+        return
+    old = addon_version(dest)
+    shutil.copytree(ADDON_SRC, dest, dirs_exist_ok=True)
+    log(f"installed the Forever Tracker addon {addon_version(dest)}"
+        + (f" (was {old})" if old else "") + f" in {dest}; restart WoW to load it")
+
+
 # --- main loop ---------------------------------------------------------------
 
 class Companion:
@@ -231,6 +320,7 @@ class Companion:
         self.poll = cfg.get("poll_seconds", 2)
         self.heartbeat_every = cfg.get("heartbeat_seconds", 30)
         self.live_every = cfg.get("live_seconds", self.LIVE_EVERY)
+        self.problem_seen = (None, 0)
         self.path = None
         self.mtime = None
         self.db = None
@@ -292,17 +382,43 @@ class Companion:
             return f"{base}/api/ingest" if base.startswith("https://") else None
         return endpoint_url(self.settings().get("endpoint") or self.cfg.get("endpoint"))
 
+    def problem(self, msg):
+        """Logs a repeating problem once, then every 5 minutes while it lasts."""
+        last, at = self.problem_seen
+        if msg != last or time.time() - at > 300:
+            log(msg)
+            self.problem_seen = (msg, time.time())
+
+    def character(self):
+        """Which character uploads belong to: from the strip, else the saved file."""
+        for who in (self.identity, (self.db or {}).get("snapshot")):
+            if isinstance(who, dict) and who.get("name"):
+                return {"name": who["name"], "realm": who.get("realm")}
+        return None
+
     def send(self, payload):
         url = self.ingest_url()
         if not url:
             log("no usable backend: set backend_url (https://...) in the config, "
                 "or a LAN address in game; not sending")
             return True  # don't retry an invalid target
+        who = self.character()
+        if not who:
+            return True  # nothing to attach it to until the game tells us who's playing
         try:
-            post(url, self.token, payload)
+            post(url, self.token, {**payload, "character": who})
             return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                self.problem("the backend doesn't accept this key; check token in config.json "
+                             "(or run with --setup)")
+            elif exc.code == 403:
+                self.problem(f"{who['name']} is already tracked with someone else's key")
+            else:
+                self.problem(f"send to {url} failed: {exc}")
+            return exc.code in (401, 403)  # retrying won't help
         except (urllib.error.URLError, OSError) as exc:
-            log(f"send to {url} failed: {exc}")
+            self.problem(f"send to {url} failed: {exc}")
             return False
 
     def check_file(self):
@@ -457,10 +573,15 @@ def main():
     ap.add_argument("--config", default=os.path.join(HERE, "config.json"))
     ap.add_argument("--dump", action="store_true",
                     help="parse the SavedVariables file once, print the payload and exit")
+    ap.add_argument("--setup", action="store_true", help="ask for the key and game folder again")
     args = ap.parse_args()
 
-    with open(args.config) as f:
-        cfg = json.load(f)
+    if args.setup or not os.path.isfile(args.config):
+        cfg = first_run(args.config)
+    else:
+        with open(args.config, encoding="utf-8") as f:
+            cfg = json.load(f)
+    install_addon(cfg)
 
     if args.dump:
         path = find_saved_variables(cfg)

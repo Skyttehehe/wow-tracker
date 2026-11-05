@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """Forever Tracker backend.
 
-- POST /api/ingest   companion uploads (bearer token; LAN only unless on Vercel)
-- GET  /api/state    latest snapshot + online status
-- GET  /api/history  position trail, XP samples, event log
-- GET  /api/stream   Server-Sent Events; fires "update" after each ingest
-- everything else    static frontend
+- POST /api/ingest       companion uploads (bearer key; LAN only unless on Vercel)
+- GET  /api/characters   every tracked character, online ones first
+- GET  /api/state?c=     latest snapshot + online status of one character
+- GET  /api/history?c=   its position trail, XP samples, event log
+- GET  /api/stream?c=    Server-Sent Events; fires "update" after each ingest
+- /api/admin/keys        friends' upload keys (FT_TOKEN only): GET list, POST
+                         {"name"} to create, DELETE ?id= to revoke
+- DELETE /api/admin/characters?c=   take a character off the site
+- everything else        static frontend
+
+Each character's data is kept apart. FT_TOKEN is the owner's key; friends get
+their own keys, and a character belongs to the key that first uploaded it.
 
 Standard library only. Configure with environment variables (see README).
 Runs as its own server (SQLite) or as a Vercel function (api/index.py, Redis).
 """
 
+import hashlib
 import hmac
 import ipaddress
 import json
 import mimetypes
 import os
+import re
+import secrets
 import sqlite3
 import threading
 import time
+import unicodedata
 import urllib.request
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -80,6 +91,41 @@ def clean_quests(quests):
             "failed": bool(q.get("failed")),
             "objectives": objectives,
         })
+    return out
+
+
+SUMMARY_FIELDS = ("name", "surname", "realm", "faction", "race", "class", "classToken", "level",
+                  "maxLevel", "zone")
+CHARACTER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def slugify(text):
+    text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+
+def character_slug(who):
+    """'Fractured' on 'CamWoW EU4 Realm 6 PvP' -> 'fractured-camwow-eu4-realm-6-pvp'."""
+    name = who.get("name") if isinstance(who, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("no character name")
+    base = slugify(name) or hashlib.sha256(name.encode()).hexdigest()[:10]
+    realm = slugify(who.get("realm") or "")
+    return (f"{base}-{realm}" if realm else base)[:64].strip("-")
+
+
+def payload_character(payload):
+    for who in (payload.get("character"), payload.get("identity"), payload.get("snapshot")):
+        if isinstance(who, dict) and who.get("name"):
+            return character_slug(who)
+    raise ValueError("upload without a character name; update the companion")
+
+
+def summarize(snap, presence):
+    """The character list's entry: who it is and whether it's online."""
+    out = {k: snap.get(k) for k in SUMMARY_FIELDS}
+    out["online"] = bool(presence.get("online"))
+    out["presenceAt"] = presence.get("t") or 0
     return out
 
 
@@ -322,7 +368,9 @@ class Store:
             if history:
                 # Tells polling pages when to refetch /api/history.
                 self.put("historyAt", now)
+            summary = summarize(self.get("snapshot") or {}, self.get("presence") or {})
         self.notify(history)
+        return summary
 
     def state(self, quests=True):
         with self.transaction():
@@ -408,19 +456,30 @@ class SqliteStore(Store):
                 "SELECT data FROM events ORDER BY t DESC LIMIT ?", (limit_events,)).fetchall()
         return list(reversed(positions)), xp, [r[0] for r in events]
 
+    def move_into(self, dest):
+        """Copies everything into `dest` (an empty store) and empties this one."""
+        with self.lock:
+            self.conn.commit()
+            self.conn.backup(dest.conn)
+            with self.conn:
+                for table in ("kv", "events", "positions", "xp"):
+                    self.conn.execute(f"DELETE FROM {table}")
+
 
 class RedisStore(Store):
     """Upstash Redis through its REST API: one read and one write round trip per upload.
 
-    Keys: ft:kv (hash of JSON values), ft:events / ft:positions / ft:xp (sorted
-    sets scored by time; members are JSON, so identical rows are stored once)."""
+    Keys under a prefix (ft:c:<character>: or ft:root:): kv (hash of JSON
+    values), events / positions / xp (sorted sets scored by time; members are
+    JSON, so identical rows are stored once)."""
 
-    KV, EVENTS, POSITIONS, XP = "ft:kv", "ft:events", "ft:positions", "ft:xp"
-    KEEP = {EVENTS: 2000, POSITIONS: 20000, XP: 20000}  # older rows beyond this are dropped
-
-    def __init__(self, url, token):
+    def __init__(self, url, token, prefix="ft:"):
         super().__init__()
         self.url, self.token = url.rstrip("/"), token
+        self.KV, self.EVENTS, self.POSITIONS, self.XP = (
+            prefix + k for k in ("kv", "events", "positions", "xp"))
+        # Older rows beyond this are dropped.
+        self.KEEP = {self.EVENTS: 2000, self.POSITIONS: 20000, self.XP: 20000}
         self.kv = None
         self.dirty = {}
         self.writes = []
@@ -484,20 +543,176 @@ class RedisStore(Store):
         return ([json.loads(p) for p in positions or []], [json.loads(x) for x in xp or []],
                 events or [])
 
+    def move_into(self, dest):
+        """Renames this store's keys to `dest`'s (an empty store)."""
+        pairs = [(self.KV, dest.KV), (self.EVENTS, dest.EVENTS),
+                 (self.POSITIONS, dest.POSITIONS), (self.XP, dest.XP)]
+        exists = self.pipeline([["EXISTS", a] for a, _ in pairs])
+        renames = [["RENAME", a, b] for (a, b), e in zip(pairs, exists) if e]
+        if renames:
+            self.pipeline(renames)
 
-def make_store():
-    """Redis when a Redis REST URL is configured (Vercel), otherwise SQLite at FT_DB."""
+
+class NotYours(Exception):
+    """The character belongs to another key."""
+
+
+class Tracker:
+    """Every character: a root store (keys, owners, character list) plus one
+    store per character, opened on demand."""
+
+    def __init__(self, open_store, legacy=None):
+        self.open_store = open_store
+        self.root = open_store(None)
+        self.stores = {}
+        self.lock = threading.Lock()
+        try:
+            self.migrate(legacy)
+        except RuntimeError as exc:  # e.g. another instance migrated first; retried next start
+            print(f"migration skipped: {exc}", flush=True)
+
+    def store(self, char):
+        with self.lock:
+            if char not in self.stores:
+                self.stores[char] = self.open_store(char)
+            return self.stores[char]
+
+    def migrate(self, legacy):
+        """Moves single-character data (before characters were kept apart) into
+        that character, owned by FT_TOKEN. Runs once."""
+        with self.root.transaction():
+            if self.root.get("migrated"):
+                return
+            snap = self.root.get("snapshot") if legacy is None else None
+        if legacy is not None:
+            with legacy.transaction():
+                snap = legacy.get("snapshot")
+        char = character_slug(snap) if snap and snap.get("name") else None
+        summary = None
+        if char:
+            dest = self.store(char)
+            (legacy or self.root).move_into(dest)
+            with dest.transaction():
+                summary = summarize(dest.get("snapshot") or {}, dest.get("presence") or {})
+        with self.root.transaction():
+            if char:
+                self.root.put("owners", {**(self.root.get("owners") or {}), char: "owner"})
+                self.root.put("index", {**(self.root.get("index") or {}), char: summary})
+            self.root.put("migrated", int(time.time()))
+
+    # Keys -------------------------------------------------------------------
+    def key_id(self, token):
+        """'owner' for FT_TOKEN, a friend's key id, or None. Inside a root transaction."""
+        if not token:
+            return None
+        if TOKEN and hmac.compare_digest(token.encode(), TOKEN.encode()):
+            return "owner"
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        return digest[:12] if digest in (self.root.get("keys") or {}) else None
+
+    def add_key(self, name):
+        token = secrets.token_hex(24)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.root.transaction():
+            keys = self.root.get("keys") or {}
+            keys[digest] = {"name": name, "t": int(time.time())}
+            self.root.put("keys", keys)
+        return {"id": digest[:12], "name": name, "token": token}
+
+    def list_keys(self):
+        with self.root.transaction():
+            keys, owners = self.root.get("keys") or {}, self.root.get("owners") or {}
+        out = [{"id": "owner", "name": "FT_TOKEN (you)", "t": None}]
+        out += [{"id": d[:12], "name": k["name"], "t": k["t"]} for d, k in keys.items()]
+        for k in out:
+            k["characters"] = sorted(c for c, o in owners.items() if o == k["id"])
+        return out
+
+    def remove_key(self, kid):
+        with self.root.transaction():
+            keys = self.root.get("keys") or {}
+            kept = {d: k for d, k in keys.items() if d[:12] != kid}
+            self.root.put("keys", kept)
+        return len(kept) < len(keys)
+
+    # Characters -------------------------------------------------------------
+    def ingest(self, token, payload):
+        char = payload_character(payload)
+        with self.root.transaction():
+            kid = self.key_id(token)
+            if kid is None:
+                raise PermissionError("bad key")
+            owners = self.root.get("owners") or {}
+            owner = owners.get(char)
+            if owner is None:
+                self.root.put("owners", {**owners, char: kid})
+            elif owner != kid and kid != "owner":
+                raise NotYours(f"{char} is uploaded by someone else's key")
+            summary = self.store(char).ingest(payload)
+            # The list only needs rewriting when something on it changed.
+            index = self.root.get("index") or {}
+            old = index.get(char)
+            if (old is None or any(old.get(k) != summary.get(k) for k in SUMMARY_FIELDS + ("online",))
+                    or summary["presenceAt"] - (old.get("presenceAt") or 0) >= 60):
+                self.root.put("index", {**index, char: summary})
+
+    def characters(self):
+        with self.root.transaction():
+            index = self.root.get("index") or {}
+        now = int(time.time())
+        out = []
+        for char, s in index.items():
+            if not s or not s.get("name"):
+                continue
+            online = bool(s.get("online")) and now - (s.get("presenceAt") or 0) < PRESENCE_TIMEOUT
+            out.append({**s, "id": char, "online": online})
+        out.sort(key=lambda c: (not c["online"], -(c.get("presenceAt") or 0)))
+        return out
+
+    def find(self, char):
+        """The store for a listed character (or the most recently active one), else None."""
+        if char:
+            if not CHARACTER_ID.match(char):
+                return None
+            with self.root.transaction():
+                listed = char in (self.root.get("index") or {})
+            return self.store(char) if listed else None
+        chars = self.characters()
+        return self.store(chars[0]["id"]) if chars else None
+
+    def hide(self, char):
+        with self.root.transaction():
+            index, owners = self.root.get("index") or {}, self.root.get("owners") or {}
+            found = char in index
+            index.pop(char, None)
+            owners.pop(char, None)
+            self.root.put("index", index)
+            self.root.put("owners", owners)
+        return found
+
+
+def make_tracker():
+    """Redis when a Redis REST URL is configured (Vercel), otherwise SQLite: the
+    root at FT_DB and one file per character next to it."""
     url = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
     token = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
     if url and token:
-        return RedisStore(url, token)
+        return Tracker(lambda c: RedisStore(url, token, "ft:root:" if c is None else f"ft:c:{c}:"),
+                       legacy=RedisStore(url, token, "ft:"))
     if SERVERLESS:
         raise RuntimeError("no database: connect an Upstash Redis store to this Vercel project "
                            "(Storage tab), then redeploy")
-    return SqliteStore(DB_PATH)
+    folder = os.path.splitext(DB_PATH)[0] + "-characters"
+
+    def open_store(char):
+        if char is None:
+            return SqliteStore(DB_PATH)
+        os.makedirs(folder, exist_ok=True)
+        return SqliteStore(os.path.join(folder, char + ".sqlite3"))
+    return Tracker(open_store)
 
 
-STORE = None
+TRACKER = None
 
 
 # --- HTTP ----------------------------------------------------------------------
@@ -542,58 +757,107 @@ class Handler(BaseHTTPRequestHandler):
             ip = ip.ipv4_mapped
         return any(ip in net for net in INGEST_NETS)
 
+    def bearer(self):
+        auth = self.headers.get("Authorization", "")
+        return auth[7:] if auth.startswith("Bearer ") else ""
+
+    def is_admin(self):
+        return bool(TOKEN) and hmac.compare_digest(self.bearer().encode(), TOKEN.encode())
+
+    def read_json(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_BODY:
+            raise OverflowError("bad body size")
+        return json.loads(self.rfile.read(length))
+
+    def query(self, name):
+        return (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/ingest":
+        path = urlparse(self.path).path
+        if path == "/api/admin/keys":
+            if not self.is_admin():
+                return self.error(HTTPStatus.UNAUTHORIZED, "admin only (FT_TOKEN)")
+            try:
+                name = str(self.read_json().get("name") or "").strip()[:40]
+            except (ValueError, OverflowError, AttributeError):
+                name = ""
+            if not name:
+                return self.error(HTTPStatus.BAD_REQUEST, 'send {"name": "..."}')
+            return self.send_json(TRACKER.add_key(name))
+        if path != "/api/ingest":
             return self.error(HTTPStatus.NOT_FOUND, "not found")
         if not self.ingest_allowed():
             return self.error(HTTPStatus.FORBIDDEN, "ingest is LAN-only")
-        if not TOKEN or not hmac.compare_digest(
-                self.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()):
-            return self.error(HTTPStatus.UNAUTHORIZED, "bad token")
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > MAX_BODY:
-            return self.error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "bad body size")
         try:
-            payload = json.loads(self.rfile.read(length))
-            STORE.ingest(payload)
+            payload = self.read_json()
+            if not isinstance(payload, dict):
+                raise ValueError("expected a JSON object")
+            TRACKER.ingest(self.bearer(), payload)
+        except OverflowError as exc:
+            return self.error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+        except NotYours as exc:
+            return self.error(HTTPStatus.FORBIDDEN, str(exc))
+        except PermissionError:
+            return self.error(HTTPStatus.UNAUTHORIZED, "bad key")
         except (ValueError, TypeError, AttributeError) as exc:
             return self.error(HTTPStatus.BAD_REQUEST, str(exc))
         self.send_json({"ok": True})
 
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        if not self.is_admin():
+            return self.error(HTTPStatus.UNAUTHORIZED, "admin only (FT_TOKEN)")
+        if path == "/api/admin/keys":
+            return self.send_json({"removed": TRACKER.remove_key(self.query("id"))})
+        if path == "/api/admin/characters":
+            return self.send_json({"removed": TRACKER.hide(self.query("c"))})
+        return self.error(HTTPStatus.NOT_FOUND, "not found")
+
     def do_GET(self):
         url = urlparse(self.path)
-        if url.path == "/api/state":
-            return self.send_json(STORE.state(), cdn_seconds=2)
-        if url.path == "/api/history":
-            # The page asks for ?v=<historyAt>, so a new version always misses the cache.
-            return self.send_json(STORE.history(), cdn_seconds=60)
-        if url.path == "/api/stream" and not SERVERLESS:
-            return self.stream()
+        if url.path == "/api/characters":
+            return self.send_json(TRACKER.characters(), cdn_seconds=5)
+        if url.path == "/api/admin/keys":
+            if not self.is_admin():
+                return self.error(HTTPStatus.UNAUTHORIZED, "admin only (FT_TOKEN)")
+            return self.send_json(TRACKER.list_keys())
+        if url.path in ("/api/state", "/api/history", "/api/stream"):
+            store = TRACKER.find(self.query("c"))
+            if store is None:
+                return self.error(HTTPStatus.NOT_FOUND, "no such character")
+            if url.path == "/api/state":
+                return self.send_json(store.state(), cdn_seconds=2)
+            if url.path == "/api/history":
+                # The page asks for ?v=<historyAt>, so a new version always misses the cache.
+                return self.send_json(store.history(), cdn_seconds=60)
+            if not SERVERLESS:
+                return self.stream(store)
         if url.path.startswith("/api/"):
             return self.error(HTTPStatus.NOT_FOUND, "not found")
         return self.static(url.path)
 
-    def stream(self):
+    def stream(self, store):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         self.close_connection = True
-        seen_live, seen_history = STORE.live_version, STORE.history_version
+        seen_live, seen_history = store.live_version, store.history_version
         try:
             self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
-                with STORE.changed:
-                    STORE.changed.wait_for(lambda: STORE.live_version != seen_live, timeout=25)
-                if STORE.history_version != seen_history:
+                with store.changed:
+                    store.changed.wait_for(lambda: store.live_version != seen_live, timeout=25)
+                if store.history_version != seen_history:
                     # Journal, trail or quests changed: the page refetches everything.
-                    seen_live, seen_history = STORE.live_version, STORE.history_version
+                    seen_live, seen_history = store.live_version, store.history_version
                     self.wfile.write(f"event: update\ndata: {seen_history}\n\n".encode())
-                elif STORE.live_version != seen_live:
-                    seen_live = STORE.live_version
-                    state = json.dumps(STORE.state(quests=False), separators=(",", ":"))
+                elif store.live_version != seen_live:
+                    seen_live = store.live_version
+                    state = json.dumps(store.state(quests=False), separators=(",", ":"))
                     self.wfile.write(f"event: live\ndata: {state}\n\n".encode())
                 else:
                     self.wfile.write(b": ping\n\n")
@@ -624,10 +888,10 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
-    global STORE
+    global TRACKER
     if not TOKEN:
-        raise SystemExit("set FT_TOKEN (shared secret for the companion)")
-    STORE = make_store()
+        raise SystemExit("set FT_TOKEN (the owner's upload and admin key)")
+    TRACKER = make_tracker()
     print(f"Forever Tracker backend on http://{HOST}:{PORT} (static: {STATIC}, db: {DB_PATH})",
           flush=True)
     Server((HOST, PORT), Handler).serve_forever()

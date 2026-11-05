@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import server  # noqa: E402
 
 try:
-    server.STORE = server.make_store()
+    server.TRACKER = server.make_tracker()
     SETUP_ERROR = None
 except RuntimeError as exc:
     SETUP_ERROR = str(exc)
@@ -27,3 +27,8 @@ class handler(server.Handler):
         if SETUP_ERROR:
             return self.error(HTTPStatus.INTERNAL_SERVER_ERROR, SETUP_ERROR)
         return super().do_POST()
+
+    def do_DELETE(self):
+        if SETUP_ERROR:
+            return self.error(HTTPStatus.INTERNAL_SERVER_ERROR, SETUP_ERROR)
+        return super().do_DELETE()

@@ -12,6 +12,8 @@
 </head>
 <body>
 <div class="page">
+  <nav class="roster" id="roster" aria-label="Characters" hidden></nav>
+
   <header class="hero">
     <div class="crest" id="crest" aria-hidden="true"></div>
     <div class="who">
@@ -60,6 +62,7 @@
         <div class="vital-label"><span id="power-name">Mana</span><span id="power-text">–</span></div>
         <div class="bar power"><div class="fill" id="power-fill"></div></div>
       </div>
+      <p class="muted small" id="vitals-empty" hidden>Health and power show up once the game reports them, usually after the first fight.</p>
       <div class="target" id="target" hidden>
         <div class="vital-label"><span id="target-who"></span><span id="target-text">–</span></div>
         <div class="bar enemy"><div class="fill" id="target-fill"></div></div>

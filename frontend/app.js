@@ -19,6 +19,10 @@ const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat();
 let state = null;
 let history = { positions: [], xp: [], events: [] };
+let characters = [];
+let selected = null;          // character id, e.g. "fractured-camwow-eu4-realm-6-pvp"
+let stream = null;
+const wanted = new URLSearchParams(location.search).get("c");
 let journalFilter = "all";
 let mapIndex = {};
 let shownMap = null;
@@ -219,6 +223,7 @@ function renderVitals(s) {
   if (s.resting) flags.push(["resting", "Resting"]);
   $("flags").innerHTML = flags.map(([c, t]) => `<span class="flag ${c}">${t}</span>`).join("");
   renderTarget(s);
+  $("vitals-empty").hidden = hp || pw || !$("target").hidden;
 }
 
 function setMapArt(mapID) {
@@ -503,12 +508,72 @@ function renderAll() {
 // --- data --------------------------------------------------------------------
 
 // all=false (polling): refetch the history only when the backend says it changed.
-async function load(all = true) {
+// --- characters ------------------------------------------------------------------
+
+const forChar = () => `c=${encodeURIComponent(selected || "")}`;
+
+// ?c= may be a full id, its start ("fractured"), or a character name.
+function pickCharacter(list) {
+  if (selected && list.some((c) => c.id === selected)) return selected;
+  const w = (wanted || "").toLowerCase();
+  const match = w && (list.find((c) => c.id === w) || list.find((c) => c.id.startsWith(`${w}-`))
+    || list.find((c) => (c.name || "").toLowerCase() === w));
+  return (match || list[0])?.id ?? null;
+}
+
+async function loadCharacters() {
   try {
-    const st = await fetch("api/state").then((r) => r.json());
+    characters = await fetch("api/characters").then((r) => (r.ok ? r.json() : []));
+  } catch (err) {
+    console.error("character list failed", err);
+  }
+  selected = pickCharacter(characters);
+  renderRoster();
+}
+
+function renderRoster() {
+  const nav = $("roster");
+  nav.hidden = characters.length < 2;
+  nav.innerHTML = characters.map((c) => {
+    const color = CLASS_COLORS[c.classToken] || "var(--gold)";
+    return `<button type="button" data-id="${esc(c.id)}" class="${c.id === selected ? "on" : ""}"
+        style="--c:${color}" title="${esc([c.name, c.surname].filter(Boolean).join(" "))} · ${esc(c.realm || "")}">
+      <span class="mini-crest${c.online ? " online" : ""}">${esc((c.class || "?").charAt(0))}</span>
+      <span class="label"><b>${esc(c.name)}</b><span>${c.level ? `Level ${c.level}` : ""}${c.online ? " · online" : ""}</span></span>
+    </button>`;
+  }).join("");
+}
+
+function selectCharacter(id) {
+  if (!id || id === selected) return;
+  selected = id;
+  const url = new URL(location.href);
+  url.searchParams.set("c", id);
+  window.history.replaceState(null, "", url);  // `history` here is the trail data
+  renderRoster();
+  state = null;
+  load();
+  if (stream) connect();
+}
+
+$("roster").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-id]");
+  if (btn) selectCharacter(btn.dataset.id);
+});
+
+// --- loading -------------------------------------------------------------------
+
+async function load(all = true) {
+  if (!selected) return;
+  const char = selected;
+  try {
+    const st = await fetch(`api/state?${forChar()}`).then((r) => r.json());
+    if (char !== selected) return;  // switched character while this was loading
     if (all || st.historyAt !== state?.historyAt) {
       // ?v= makes each history version its own CDN cache entry on Vercel.
-      history = await fetch(`api/history?v=${st.historyAt ?? 0}`).then((r) => r.json());
+      const hist = await fetch(`api/history?${forChar()}&v=${st.historyAt ?? 0}`).then((r) => r.json());
+      if (char !== selected) return;
+      history = hist;
       state = st;
       renderAll();
     } else {
@@ -525,7 +590,8 @@ async function load(all = true) {
 
 function connect() {
   if (!window.EventSource) return;
-  const es = new EventSource("api/stream");
+  stream?.close();
+  const es = stream = new EventSource(`api/stream?${forChar()}`);
   es.addEventListener("update", load);
   es.addEventListener("live", (ev) => {
     const { quests, gear } = state || {};
@@ -570,11 +636,14 @@ fetch("maps/index.json")
   .then((r) => (r.ok ? r.json() : {}))
   .catch(() => ({}))
   .then((idx) => { mapIndex = idx; })
+  .then(() => loadCharacters())
   .then(() => load())
   .finally(() => {
+    // Characters come and go online; keep the picker current.
+    setInterval(loadCharacters, 15_000);
     // On Vercel there is no live stream (functions end after each request): poll instead.
-    if (state?.stream === false) {
-      setInterval(() => load(false), POLL_SECONDS * 1000);
+    if (state?.stream !== true) {
+      setInterval(() => (selected ? load(false) : loadCharacters().then(() => load())), POLL_SECONDS * 1000);
       return;
     }
     connect();

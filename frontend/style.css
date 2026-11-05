@@ -37,6 +37,27 @@ body {
 h1, h2 { font-family: Cinzel, Georgia, serif; font-weight: 700; margin: 0; letter-spacing: .02em; }
 h2 { font-size: 16px; color: var(--gold); }
 
+/* character picker */
+.roster { display: flex; gap: 8px; margin: 0 0 22px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.roster button {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  padding: 6px 14px 6px 6px; border-radius: 999px; cursor: pointer;
+  background: var(--bg-2); border: 1px solid var(--line); color: var(--text); font: inherit;
+}
+.roster button:hover { border-color: var(--gold-dim); }
+.roster button.on { border-color: var(--c, var(--gold)); background: color-mix(in srgb, var(--c, var(--gold)) 12%, var(--bg-2)); }
+.roster .mini-crest {
+  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; position: relative;
+  border: 1.5px solid var(--c, var(--gold)); color: var(--c, var(--gold)); font: 700 14px Cinzel, serif;
+}
+.roster .mini-crest.online::after {
+  content: ""; position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--online); border: 2px solid var(--bg-2);
+}
+.roster .label { display: grid; text-align: left; line-height: 1.2; }
+.roster .label b { font-weight: 600; font-size: 14px; }
+.roster .label span { font-size: 12px; color: var(--muted); }
+
 /* hero */
 .hero { display: flex; align-items: center; gap: 20px; margin-bottom: 28px; flex-wrap: wrap; }
 .crest {

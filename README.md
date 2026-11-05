@@ -103,6 +103,33 @@ Differences from running it yourself:
   companion, an hour of play is roughly 1,800 uploads. Compare that with your Upstash plan's monthly command limit;
   raise `live_seconds` if you get close.
 
+#### Friends on the same site
+
+Everyone's characters can share one site: a row at the top picks who to watch, and `?c=<name>` links straight
+to a character (e.g. `wow.osrs.dk/?c=fractured`). Each friend gets their own upload key, so nobody can overwrite
+someone else's character; a character belongs to the key that first uploaded it. Your `FT_TOKEN` is the owner key
+and can upload anything.
+
+```bash
+python tools/friends.py add "Bob"      # prints Bob's key once; send it to him privately
+python tools/friends.py list           # keys and their characters
+python tools/friends.py remove <id>    # revoke a key
+python tools/friends.py hide <character-id>
+```
+
+`tools/friends.py` uses `backend_url` and your `FT_TOKEN` from `companion/config.json`.
+
+To build the package friends need (Windows):
+
+```bash
+python -m pip install pyinstaller pillow
+python tools/package.py                # -> dist/ForeverTracker-<version>.zip
+```
+
+The zip holds `ForeverTrackerCompanion.exe` (Python bundled; on first run it finds WoW, installs the addon and asks
+for the key), the addon folder for installing by hand, and a README for your friend. Each friend's uploads count
+towards the same Upstash command budget, so with several people playing, keep an eye on usage.
+
 #### On your own server (Proxmox CT)
 
 A Debian 12 CT with `python3` is all it needs. There are no pip dependencies.
