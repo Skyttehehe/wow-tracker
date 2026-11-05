@@ -4,3 +4,4 @@ __pycache__/
 .vercel
 build/
 dist/
+friend-codes.json
