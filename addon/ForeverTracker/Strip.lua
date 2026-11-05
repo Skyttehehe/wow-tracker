@@ -148,6 +148,12 @@ end
 
 FT.OnEvent(function(e) enqueue("E", e) end)
 
+-- Sharing again: send every message kind right away instead of on its timer.
+FT.OnResume(function()
+	wipe(lastSent)
+	lastQuests, lastGear, lastProfessions, lastJumps, lastTarget, lastZoneKey = nil, nil, nil, nil, nil, nil
+end)
+
 local function nextChunk()
 	if current and current.index < current.count then
 		current.index = current.index + 1

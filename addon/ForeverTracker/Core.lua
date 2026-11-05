@@ -249,6 +249,12 @@ end
 
 -- Refreshes the cached snapshot. Runs every TICK seconds, so the file holds
 -- the last good state whenever the client decides to write it.
+-- FT.OnResume(fn): called when sharing starts again after "Appear offline" or
+-- "Enable tracking" was switched off, so everything is re-read and resent.
+local resumeListeners = {}
+function FT.OnResume(fn) resumeListeners[#resumeListeners + 1] = fn end
+local wasRecording
+
 local function refresh()
 	if not db then return end
 	if not FT.IsRecording() then
@@ -258,8 +264,15 @@ local function refresh()
 		db.professions = nil
 		FT.professionsKey = nil
 		FT.current = nil
+		wasRecording = false
 		return
 	end
+	if wasRecording == false then
+		-- Back from appearing offline: re-read now rather than on the next game event.
+		FT.questsDirty, FT.gearDirty, FT.professionsDirty = true, true, true
+		for _, fn in ipairs(resumeListeners) do fn() end
+	end
+	wasRecording = true
 	local snap = FT.BuildSnapshot()
 	if plausible(snap) then
 		FT.current = snap

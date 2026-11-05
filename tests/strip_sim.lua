@@ -182,6 +182,8 @@ for step = 1, 300 do -- 30 seconds at 10 Hz
 	if step == 30 or step == 40 or step == 41 then JumpOrAscendStart() end  -- 41: same press mid-air
 	if step == 60 then swimming = true; JumpOrAscendStart(); swimming = false end
 	if step == 70 then JumpOrAscendStart() end
+	if step == 225 then FT.SetSetting("appearOffline", true) end
+	if step == 245 then FT.SetSetting("appearOffline", false) end  -- everything is resent right away
 	if step == 200 then gear[17] = { 2129, "Large Round Shield", 2, 7 }; fire("PLAYER_EQUIPMENT_CHANGED", 17, false) end
 	local bytes = FT.StripEncode()
 	for i = 0, 170 do f:write(string.char(bytes[i])) end
