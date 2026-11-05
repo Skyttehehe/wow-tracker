@@ -377,13 +377,13 @@ class Companion:
             return
         self.last_hidden_post = 0
         target = dict(self.target) if self.target else None
-        guid = target.pop("guid", None) if target else None
+        if target:
+            target.pop("guid", None)  # scrambled by the client; never uploaded
         payload = {"kind": "live", "frame": self.frame, "identity": self.identity,
                    "zone": self.zone, "events": self.events, "target": target}
         # Health/power from the game's combat log, only while the in-game
         # setting is on (the strip says so).
         if self.combat_log and flags.get("combatLog"):
-            self.combat_log.watch = guid
             try:
                 self.combat_log.poll()
             except OSError as exc:
@@ -394,8 +394,10 @@ class Companion:
             if surname:
                 payload["identity"] = {**self.identity, "surname": surname}
             # The target's health, when the game keeps it secret from the addon.
-            seen = self.combat_log.watched
-            if target and target.get("pct") is None and seen and seen["guid"] == guid:
+            seen = target and not target.get("player") and target.get("pct") is None \
+                and self.combat_log.foe_health(target.get("name"))
+            # A dead one with that name is a previous kill, not a fresh target.
+            if seen and (seen["health"] > 0 or target.get("dead")):
                 target.update(health=seen["health"], healthMax=seen["healthMax"], healthAt=seen["t"])
         if self.quests_dirty:
             payload["quests"] = self.quests

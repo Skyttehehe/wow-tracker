@@ -5,8 +5,9 @@ The client writes an "advanced" block on most lines describing one unit:
     infoGUID, ownerGUID, currentHP, maxHP, attackPower, spellPower, armor,
     3 more fields, powerType, currentPower, maxPower, powerCost, x, y, ...
 Only lines whose unit is the player's own character are used, plus the health
-of the creature the player has targeted (never another player's); the log also
-contains everyone nearby, and none of that is passed on.
+of creatures fighting the player (never another player's), for the target
+shown on the website; the log also contains everyone nearby, and none of that
+is passed on.
 """
 
 import csv
@@ -21,6 +22,8 @@ MINE, PLAYER = 0x1, 0x400
 GUID = re.compile(r"^[A-Za-z]+-[0-9A-F]+(-[0-9A-F]+)*$")
 NO_OWNER = "0000000000000000"
 POWER_TYPES = {"0": "MANA", "1": "RAGE", "2": "FOCUS", "3": "ENERGY"}
+FOE_KINDS = ("Creature-", "Vehicle-")
+MAX_FOES = 20
 BACKFILL = 64 * 1024  # bytes read from the end of a log when first opened
 IDENTITY_SCAN = 8 * 1024 * 1024  # bytes searched from the start for our own name
 
@@ -50,8 +53,7 @@ class CombatLogTail:
         self.full_name = None   # e.g. "Pattes-Heals-PvP-EU": first name, surname, realm
         self.surnames = {}      # first name -> surname, kept across log files
         self.vitals = None      # latest {"t", "health", "healthMax", "power": {...}}
-        self.watch = None       # GUID of the creature we're targeting
-        self.watched = None     # its latest {"guid", "t", "health", "healthMax"}
+        self.foes = {}          # creature GUID -> {"name", "t", "health", "healthMax"}
         self.next_check = 0
 
     def poll(self):
@@ -111,6 +113,17 @@ class CombatLogTail:
             self.surnames[first] = parts[1]
         return self.surnames.get(first)
 
+    def foe_health(self, name, max_age=60):
+        """Latest health of a creature called `name` that fought us recently.
+        Forever scrambles the GUIDs addons see, so the name is all we can match."""
+        newest = None
+        for foe in self.foes.values():
+            if foe["name"] == name and (newest is None or foe["t"] > newest["t"]):
+                newest = foe
+        if newest and time.time() - newest["t"] <= max_age:
+            return newest
+        return None
+
     def parse(self, line):
         stamp, sep, body = line.partition("  ")
         if not sep:
@@ -131,10 +144,15 @@ class CombatLogTail:
                 self.me, self.full_name = fields[1], fields[2]
         if self.me is None:
             return
-        # Only creatures: other players' health never leaves this PC.
-        watch = self.watch if self.watch and self.watch.startswith(("Creature-", "Vehicle-")) else None
+        # A creature on a line where it and we are source and target: something
+        # fighting us. Other players' health never leaves this PC.
+        foe = None
+        if len(fields) > 6 and self.me in (fields[1], fields[5]):
+            other, name = (fields[5], fields[6]) if fields[1] == self.me else (fields[1], fields[2])
+            if other.startswith(FOE_KINDS):
+                foe = other
         for i in range(1, len(fields) - 13):
-            if fields[i] not in (self.me, watch) or not (fields[i + 1] == NO_OWNER or GUID.match(fields[i + 1])):
+            if fields[i] not in (self.me, foe) or not (fields[i + 1] == NO_OWNER or GUID.match(fields[i + 1])):
                 continue
             try:
                 hp, hp_max = int(fields[i + 2]), int(fields[i + 3])
@@ -144,9 +162,13 @@ class CombatLogTail:
             t = parse_time(stamp)
             if t is None or hp_max <= 0:
                 return
-            if fields[i] == watch:
-                if self.watched is None or self.watched["guid"] != watch or t >= self.watched["t"]:
-                    self.watched = {"guid": watch, "t": round(t, 2), "health": hp, "healthMax": hp_max}
+            if fields[i] == foe:
+                old = self.foes.pop(foe, None)
+                if old is None or t >= old["t"]:
+                    old = {"name": name, "t": round(t, 2), "health": hp, "healthMax": hp_max}
+                self.foes[foe] = old  # re-inserted: most recently seen last
+                while len(self.foes) > MAX_FOES:
+                    self.foes.pop(next(iter(self.foes)))
                 return
             if self.vitals is None or t >= self.vitals["t"]:
                 self.vitals = {
