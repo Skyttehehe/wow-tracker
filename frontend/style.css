@@ -169,8 +169,8 @@ a { color: var(--gold); }
   grid-template-areas:
     "prog prog prog prog prog prog prog vit vit vit vit vit"
     "gear gear gear gear gear loc loc loc loc loc loc loc"
-    "quest quest quest quest quest jour jour jour jour jour jour jour"
-    "prof prof prof prof prof time time time time time time time";
+    "prof prof prof prof prof time time time time time time time"
+    "quest quest quest quest quest jour jour jour jour jour jour jour";
 }
 .progress { grid-area: prog; }
 .vitals { grid-area: vit; }
@@ -181,7 +181,7 @@ a { color: var(--gold); }
 .gear { grid-area: gear; }
 .professions { grid-area: prof; }
 @media (max-width: 960px) {
-  .grid { grid-template-columns: 1fr; grid-template-areas: "prog" "vit" "gear" "loc" "quest" "jour" "prof" "time"; }
+  .grid { grid-template-columns: 1fr; grid-template-areas: "prog" "vit" "gear" "loc" "prof" "time" "quest" "jour"; }
   .presence { align-items: flex-start; }
 }
 
