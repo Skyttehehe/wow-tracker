@@ -14,7 +14,7 @@
 --   49-166 chunk bytes         167  health %   168  power %
 --   169-170 Fletcher-16 of bytes 0-168
 --
--- Messages (identity, zone, quest log, journal events) are JSON prefixed with
+-- Messages (identity, zone, quest log, gear, journal events) are JSON prefixed with
 -- a type letter, split into chunks and shown one chunk per HOLD interval.
 -- Unreadable (secret) values have their valid bit cleared and are sent as 0.
 
@@ -74,6 +74,7 @@ local current          -- { id, data, index, count, shown }
 local nextID = 0
 local lastSent = {}    -- type -> time last queued
 local lastQuests
+local lastGear
 
 local function enqueue(kind, payload)
 	local data = kind .. json(payload)
@@ -112,6 +113,10 @@ local function schedule()
 	if FT.db.quests and (FT.questsVersion ~= lastQuests or not lastSent.Q or now - lastSent.Q > 60) then
 		lastQuests = FT.questsVersion
 		enqueue("Q", FT.db.quests)
+	end
+	if FT.db.gear and (FT.gearVersion ~= lastGear or not lastSent.G or now - lastSent.G > 120) then
+		lastGear = FT.gearVersion
+		enqueue("G", FT.db.gear)
 	end
 end
 

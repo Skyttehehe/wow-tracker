@@ -253,6 +253,7 @@ local function refresh()
 	if not FT.IsRecording() then
 		db.snapshot = nil
 		db.quests = nil
+		db.gear = nil
 		FT.current = nil
 		return
 	end
@@ -265,6 +266,13 @@ local function refresh()
 		FT.questsDirty = false
 		db.quests = FT.ReadQuestLog()
 		FT.questsVersion = (FT.questsVersion or 0) + 1
+	end
+	if FT.ReadGear and FT.gearDirty then
+		FT.gearDirty = false
+		local items, incomplete = FT.ReadGear()
+		FT.gearIncomplete = incomplete
+		db.gear = items
+		FT.gearVersion = (FT.gearVersion or 0) + 1
 	end
 	local t = now()
 	if t - lastPositionSample >= POSITION_EVERY then
@@ -303,6 +311,7 @@ end
 function handlers.PLAYER_ENTERING_WORLD(isInitialLogin, isReload)
 	leaving = false
 	FT.questsDirty = true
+	FT.gearDirty = true
 	-- Zone text isn't ready on the first frame of a login.
 	C_Timer.After(2, function()
 		lastZone = lastZone or read("zone", GetRealZoneText)

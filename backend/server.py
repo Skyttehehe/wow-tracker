@@ -83,6 +83,26 @@ def clean_quests(quests):
     return out
 
 
+GEAR_SLOTS = set(range(1, 20))
+
+
+def clean_gear(items):
+    """Keeps only the expected item fields, one item per equipment slot."""
+    out = {}
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or it.get("slot") not in GEAR_SLOTS:
+            continue
+        num = lambda k: it.get(k) if isinstance(it.get(k), int) and not isinstance(it.get(k), bool) else None
+        out[it["slot"]] = {
+            "slot": it["slot"],
+            "id": num("id"),
+            "name": it["name"][:100] if isinstance(it.get("name"), str) else None,
+            "quality": num("quality"),
+            "ilvl": num("ilvl"),
+        }
+    return list(out.values())
+
+
 # --- storage -----------------------------------------------------------------
 #
 # Store holds the tracking logic; subclasses only store and fetch rows.
@@ -174,6 +194,8 @@ class Store:
         if "quests" in payload:
             self.put("quests", {"t": now, "list": clean_quests(payload["quests"])})
             history = True
+        if "gear" in payload:
+            self.put("gear", {"t": now, "items": clean_gear(payload["gear"])})
         if snap.get("name"):
             self.put("snapshot", snap)
             self.put("updatedAt", now)
@@ -254,6 +276,8 @@ class Store:
                     self.put("presence", {"online": online, "t": now})
                     if payload.get("quests") is not None:
                         self.put("quests", {"t": now, "list": clean_quests(payload["quests"])})
+                    if payload.get("gear") is not None:
+                        self.put("gear", {"t": now, "items": clean_gear(payload["gear"])})
                 history = True
                 self.add_events(payload.get("events"))
                 self.insert_positions([
@@ -279,6 +303,7 @@ class Store:
             live_at = self.get("liveAt") or 0
             history_at = self.get("historyAt")
             quest_state = self.get("quests") if quests else None
+            gear = self.get("gear") if quests else None
         now = int(time.time())
         online = presence["online"] and now - presence["t"] < PRESENCE_TIMEOUT
         state = {
@@ -294,6 +319,7 @@ class Store:
         }
         if quests:
             state["quests"] = quest_state
+            state["gear"] = gear
         return state
 
     def history(self, limit_positions=500, limit_events=150):

@@ -395,6 +395,41 @@ function renderQuests() {
   list.innerHTML = html;
 }
 
+// Inventory slot ids in character-pane order (4 = shirt, 19 = tabard).
+const GEAR_SLOTS = [
+  [1, "Head"], [2, "Neck"], [3, "Shoulder"], [15, "Back"], [5, "Chest"], [4, "Shirt"], [19, "Tabard"],
+  [9, "Wrist"], [10, "Hands"], [6, "Waist"], [7, "Legs"], [8, "Feet"], [11, "Finger"], [12, "Finger"],
+  [13, "Trinket"], [14, "Trinket"], [16, "Main hand"], [17, "Off hand"], [18, "Ranged"],
+];
+const COSMETIC_SLOTS = new Set([4, 19]);
+
+function renderGear() {
+  const list = $("gear-list");
+  const items = state?.gear?.items;
+  if (!items) {
+    $("gear-ilvl").textContent = "";
+    list.innerHTML = `<p class="empty">No equipment received yet.</p>`;
+    return;
+  }
+  const bySlot = new Map(items.map((it) => [it.slot, it]));
+  // Average item level over real gear slots; shirt and tabard don't count.
+  const levels = items.filter((it) => !COSMETIC_SLOTS.has(it.slot) && it.ilvl).map((it) => it.ilvl);
+  $("gear-ilvl").textContent = levels.length
+    ? `Avg item level ${Math.round(levels.reduce((a, b) => a + b, 0) / levels.length)}` : "";
+  list.innerHTML = GEAR_SLOTS.map(([slot, label]) => {
+    const it = bySlot.get(slot);
+    // Empty shirt and tabard slots are normal; leave them out.
+    if (!it && COSMETIC_SLOTS.has(slot)) return "";
+    const q = Number.isInteger(it?.quality) ? ` q${Math.min(Math.max(it.quality, 0), 7)}` : "";
+    const name = it ? esc(it.name || `Item ${it.id ?? ""}`) : "Empty";
+    return `<div class="item${it ? q : " empty"}">
+      <span class="name" title="${name}">${name}</span>
+      <span class="ilvl">${it?.ilvl ? `ilvl ${it.ilvl}` : ""}</span>
+      <span class="slot">${label}</span>
+    </div>`;
+  }).join("");
+}
+
 function describe(e) {
   switch (e.type) {
     case "level": return [`Reached level ${e.level}`, e.zone];
@@ -441,6 +476,7 @@ function renderLive() {
 function renderAll() {
   renderPresence();
   renderQuests();
+  renderGear();
   const s = state?.snapshot;
   if (!s) return;
   renderLive();
@@ -464,6 +500,7 @@ async function load(all = true) {
       state = st;
       renderPresence();
       renderQuests();
+      renderGear();
       if (st.snapshot) renderLive();
     }
   } catch (err) {
@@ -476,9 +513,10 @@ function connect() {
   const es = new EventSource("api/stream");
   es.addEventListener("update", load);
   es.addEventListener("live", (ev) => {
-    const quests = state?.quests;
+    const { quests, gear } = state || {};
     state = JSON.parse(ev.data);
     state.quests = quests;
+    state.gear = gear;
     renderLive();
   });
   // After a dropped connection, catch up on anything missed.

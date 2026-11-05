@@ -248,6 +248,8 @@ class Companion:
         self.zone = None
         self.quests = None
         self.quests_dirty = False
+        self.gear = None
+        self.gear_dirty = False
         self.events = []
         self.last_live_post = 0
         self.last_hidden_post = 0
@@ -278,6 +280,7 @@ class Companion:
             "positions": self.db.get("positions") or [],
             "xp": self.db.get("xp") or [],
             "quests": self.db.get("quests"),
+            "gear": self.db.get("gear"),
         }
 
     def ingest_url(self):
@@ -345,6 +348,9 @@ class Companion:
         elif kind == "Q":
             if payload != self.quests:
                 self.quests, self.quests_dirty = payload, True
+        elif kind == "G":
+            if payload != self.gear:
+                self.gear, self.gear_dirty = payload, True
         elif kind == "E":
             self.events.append(payload)
 
@@ -383,9 +389,12 @@ class Companion:
                 payload["identity"] = {**self.identity, "surname": surname}
         if self.quests_dirty:
             payload["quests"] = self.quests
+        if self.gear_dirty:
+            payload["gear"] = self.gear
         if self.send(payload):
             self.events = []
             self.quests_dirty = False
+            self.gear_dirty = False
             self.last_heartbeat = now
 
     # --- main loop -----------------------------------------------------------

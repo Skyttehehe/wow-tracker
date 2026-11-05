@@ -74,6 +74,7 @@ h2 { font-size: 16px; color: var(--gold); }
   grid-template-areas:
     "prog prog prog prog prog prog prog vit vit vit vit vit"
     "loc loc loc loc loc loc loc quest quest quest quest quest"
+    "gear gear gear gear gear gear gear gear gear gear gear gear"
     "time time time time time time time jour jour jour jour jour";
 }
 .progress { grid-area: prog; }
@@ -82,8 +83,9 @@ h2 { font-size: 16px; color: var(--gold); }
 .timeline { grid-area: time; }
 .journal { grid-area: jour; }
 .quests { grid-area: quest; display: flex; flex-direction: column; }
+.gear { grid-area: gear; }
 @media (max-width: 900px) {
-  .grid { grid-template-columns: 1fr; grid-template-areas: "prog" "vit" "loc" "quest" "time" "jour"; }
+  .grid { grid-template-columns: 1fr; grid-template-areas: "prog" "vit" "loc" "quest" "gear" "time" "jour"; }
   .presence { align-items: flex-start; }
 }
 
@@ -198,6 +200,20 @@ h2 { font-size: 16px; color: var(--gold); }
 .empty { color: var(--muted); padding: 16px 0; }
 
 .foot { margin-top: 28px; text-align: center; }
+
+/* equipment */
+.gear-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.item {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 10px;
+  padding: 9px 12px; border-radius: 10px; background: var(--bg-2);
+  border-left: 3px solid var(--q, var(--line));
+}
+.item .name { color: var(--q, var(--text)); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .slot { grid-column: 1; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.item .ilvl { grid-column: 2; grid-row: 1 / span 2; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.item.empty .name { color: var(--muted); font-weight: 500; }
+.q0 { --q: #9d9d9d; } .q1 { --q: #ffffff; } .q2 { --q: #1eff00; } .q3 { --q: #0070dd; }
+.q4 { --q: #a335ee; } .q5 { --q: #ff8000; } .q6 { --q: #e6cc80; } .q7 { --q: #00ccff; }
 
 /* quests */
 .quest-list { overflow-y: auto; max-height: 520px; margin-right: -8px; padding-right: 8px; }

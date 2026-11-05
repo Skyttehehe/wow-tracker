@@ -7,5 +7,6 @@
 
 Core.lua
 Quests.lua
+Gear.lua
 Strip.lua
 Options.lua
