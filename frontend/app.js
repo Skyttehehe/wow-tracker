@@ -179,6 +179,25 @@ function setBar(fill, text, cur, max, percent) {
   return false;
 }
 
+const RANKS = { elite: "Elite", rare: "Rare", rareelite: "Rare elite", worldboss: "Boss" };
+
+// What the character is fighting: their current attackable target.
+function renderTarget(s) {
+  const t = s.target;
+  $("target").hidden = !(t && state.live);
+  if ($("target").hidden) return;
+  const level = t.level === -1 ? "??" : t.level;
+  const who = t.player ? `${t.class || "Player"} (player)` : t.name || "Unknown";
+  $("target-who").innerHTML = `${s.combat ? "Fighting" : "Targeting"} <span class="who">${esc(who)}</span>`
+    + `${level != null ? ` · Lv ${level}` : ""}${t.rank ? `<span class="rank">${RANKS[t.rank]}</span>` : ""}`;
+  if (t.dead) {
+    $("target-fill").style.width = "0%";
+    $("target-text").textContent = "Defeated";
+    return;
+  }
+  setBar("target-fill", "target-text", t.health, t.healthMax, t.pct);
+}
+
 function renderVitals(s) {
   const hp = setBar("hp-fill", "hp-text", s.health, s.healthMax, s.healthPct);
   const p = s.power || {};
@@ -204,6 +223,7 @@ function renderVitals(s) {
   }
   if (!state.live) notes.push("Shown as of the last update.");
   $("vitals-note").textContent = notes.join(" ");
+  renderTarget(s);
 }
 
 function setMapArt(mapID) {

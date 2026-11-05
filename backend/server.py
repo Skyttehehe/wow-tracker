@@ -83,6 +83,34 @@ def clean_quests(quests):
     return out
 
 
+TARGET_RANKS = {"elite", "rare", "rareelite", "worldboss"}
+
+
+def clean_target(t):
+    """What the player is fighting. Other players never carry a name."""
+    if not isinstance(t, dict) or not t:
+        return None
+
+    def num(k, lo, hi):
+        v = t.get(k)
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi else None
+
+    player = t.get("player") is True
+    text = lambda k, n: t[k][:n] if isinstance(t.get(k), str) else None
+    return {
+        "player": player,
+        "name": None if player else text("name", 80),
+        "class": text("class", 30) if player else None,
+        "level": num("level", -1, 1000),
+        "rank": t.get("rank") if t.get("rank") in TARGET_RANKS else None,
+        "pct": num("pct", 0, 100),
+        "health": num("health", 0, 10**9),
+        "healthMax": num("healthMax", 1, 10**9),
+        "healthAt": num("healthAt", 0, 10**10),
+        "dead": t.get("dead") is True,
+    }
+
+
 GEAR_SLOTS = set(range(1, 20))
 
 
@@ -186,6 +214,7 @@ class Store:
                 snap["vitalsAt"] = vitals["t"]
         for k in ("dead", "ghost", "combat", "resting"):
             snap[k] = bool(flags.get(k))
+        snap["target"] = clean_target(payload.get("target"))
         self.assume_full(snap, now, frame, sampler)
         snap["status"] = "offline" if flags.get("leaving") else "online"
         snap["t"] = frame.get("t") or now

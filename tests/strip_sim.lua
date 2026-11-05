@@ -8,6 +8,7 @@ local SECRET = setmetatable({}, { __tostring = function() return "<secret>" end 
 
 local S = { level = 3, xp = 120, xpMax = 1100, x = 0.2971, y = 0.7166, zone = "Dun Morogh",
 	subzone = "Coldridge Valley", mapID = 1426, hp = SECRET, hpMax = 92, mana = 70, manaMax = 110 }
+local T -- current target, set during the run
 
 function issecretvalue(v) return v == SECRET end
 function GetServerTime() return clock end
@@ -76,7 +77,6 @@ function GetXPExhaustion() return 300 end
 function UnitHealth() return S.hp end
 function UnitHealthMax() return S.hpMax end
 CurveConstants = { ScaleTo100 = {} }
-function UnitHealthPercent() return 73.4 end
 function UnitPowerPercent() return SECRET end
 function UnitPowerType() return 0, "MANA" end
 function UnitPower() return S.mana end
@@ -87,6 +87,10 @@ function UnitIsGhost() return false end
 function IsResting() return false end
 function UnitAffectingCombat() return true end
 function GetRealZoneText() return S.zone end
+function UnitHealthPercent(u)
+	if u == "target" then return T and T.pct end
+	return 73.4
+end
 function GetSubZoneText() return S.subzone end
 
 -- Equipped items by slot; slot 16's item level isn't cached until later.
@@ -100,6 +104,14 @@ local function link(slot)
 	return g and ("|cff1eff00|Hitem:" .. g[1] .. "::::::::3:::::|h[" .. g[2] .. "]|h|r")
 end
 function GetInventoryItemLink(_, slot) return link(slot) end
+
+-- Target (T, declared at the top): a rare-elite creature that dies, then an enemy player.
+function UnitExists(u) return u == "target" and T ~= nil end
+function UnitCanAttack() return T ~= nil end
+function UnitIsPlayer(u) return u == "target" and T and T.player or false end
+function UnitIsDead(u) return u == "target" and T and T.dead or false end
+function UnitClassification() return T and T.rank or "normal" end
+function UnitGUID(u) return u == "target" and T and T.guid or "Player-1-00000001" end
 function GetInventoryItemID(_, slot) return gear[slot] and gear[slot][1] end
 function GetInventoryItemQuality(_, slot) return gear[slot] and gear[slot][3] end
 C_Item = { GetDetailedItemLevelInfo = function(l)
@@ -112,6 +124,12 @@ local function load(file) assert(loadfile("addon/ForeverTracker/" .. file))("For
 load("Core.lua")
 load("Quests.lua")
 load("Gear.lua")
+load("Target.lua")
+-- Target-aware unit functions (the addon captured nothing at load time).
+local baseName, baseLevel, baseClass = UnitName, UnitLevel, UnitClass
+UnitName = function(u) if u == "target" then return T and T.name end return baseName(u) end
+UnitLevel = function(u) if u == "target" then return T and T.level end return baseLevel(u) end
+UnitClass = function(u) if u == "target" then return T and T.class end return baseClass(u) end
 load("Strip.lua")
 local FT = ForeverTracker
 local eventFrame = frames[1]
@@ -131,6 +149,11 @@ for step = 1, 300 do -- 30 seconds at 10 Hz
 	end
 	if step == 50 then fire("QUEST_TURNED_IN", 233, 450, 120) end
 	if step == 120 then cached = true; fire("GET_ITEM_INFO_RECEIVED", 2361, true) end
+	if step == 60 then T = { name = "Vicious Grell", level = 9, rank = "rareelite", pct = 100, guid = "Creature-0-1-1-1-2005-0000AB" } end
+	if T and not T.player and step > 60 and step < 140 then T.pct = math.max(0, 100 - (step - 60)) end
+	if step == 140 then T.dead = true end
+	if step == 160 then T = { player = true, name = "Stelfi", class = "Druid", level = 12, guid = "Player-1-00BEEF" } end
+	if step == 260 then T = nil end
 	if step == 200 then gear[17] = { 2129, "Large Round Shield", 2, 7 }; fire("PLAYER_EQUIPMENT_CHANGED", 17, false) end
 	local bytes = FT.StripEncode()
 	for i = 0, 170 do f:write(string.char(bytes[i])) end

@@ -4,7 +4,8 @@ logging on) for the player's current health and power.
 The client writes an "advanced" block on most lines describing one unit:
     infoGUID, ownerGUID, currentHP, maxHP, attackPower, spellPower, armor,
     3 more fields, powerType, currentPower, maxPower, powerCost, x, y, ...
-Only lines whose unit is the player's own character are used; the log also
+Only lines whose unit is the player's own character are used, plus the health
+of the creature the player has targeted (never another player's); the log also
 contains everyone nearby, and none of that is passed on.
 """
 
@@ -49,6 +50,8 @@ class CombatLogTail:
         self.full_name = None   # e.g. "Pattes-Heals-PvP-EU": first name, surname, realm
         self.surnames = {}      # first name -> surname, kept across log files
         self.vitals = None      # latest {"t", "health", "healthMax", "power": {...}}
+        self.watch = None       # GUID of the creature we're targeting
+        self.watched = None     # its latest {"guid", "t", "health", "healthMax"}
         self.next_check = 0
 
     def poll(self):
@@ -128,8 +131,10 @@ class CombatLogTail:
                 self.me, self.full_name = fields[1], fields[2]
         if self.me is None:
             return
+        # Only creatures: other players' health never leaves this PC.
+        watch = self.watch if self.watch and self.watch.startswith(("Creature-", "Vehicle-")) else None
         for i in range(1, len(fields) - 13):
-            if fields[i] != self.me or not (fields[i + 1] == NO_OWNER or GUID.match(fields[i + 1])):
+            if fields[i] not in (self.me, watch) or not (fields[i + 1] == NO_OWNER or GUID.match(fields[i + 1])):
                 continue
             try:
                 hp, hp_max = int(fields[i + 2]), int(fields[i + 3])
@@ -138,6 +143,10 @@ class CombatLogTail:
                 continue
             t = parse_time(stamp)
             if t is None or hp_max <= 0:
+                return
+            if fields[i] == watch:
+                if self.watched is None or self.watched["guid"] != watch or t >= self.watched["t"]:
+                    self.watched = {"guid": watch, "t": round(t, 2), "health": hp, "healthMax": hp_max}
                 return
             if self.vitals is None or t >= self.vitals["t"]:
                 self.vitals = {

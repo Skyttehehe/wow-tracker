@@ -8,5 +8,6 @@
 Core.lua
 Quests.lua
 Gear.lua
+Target.lua
 Strip.lua
 Options.lua

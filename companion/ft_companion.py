@@ -250,6 +250,7 @@ class Companion:
         self.quests_dirty = False
         self.gear = None
         self.gear_dirty = False
+        self.target = None
         self.events = []
         self.last_live_post = 0
         self.last_hidden_post = 0
@@ -348,6 +349,8 @@ class Companion:
         elif kind == "Q":
             if payload != self.quests:
                 self.quests, self.quests_dirty = payload, True
+        elif kind == "T":
+            self.target = payload or None
         elif kind == "G":
             if payload != self.gear:
                 self.gear, self.gear_dirty = payload, True
@@ -373,11 +376,14 @@ class Companion:
         if not flags["sharing"]:
             return
         self.last_hidden_post = 0
+        target = dict(self.target) if self.target else None
+        guid = target.pop("guid", None) if target else None
         payload = {"kind": "live", "frame": self.frame, "identity": self.identity,
-                   "zone": self.zone, "events": self.events}
+                   "zone": self.zone, "events": self.events, "target": target}
         # Health/power from the game's combat log, only while the in-game
         # setting is on (the strip says so).
         if self.combat_log and flags.get("combatLog"):
+            self.combat_log.watch = guid
             try:
                 self.combat_log.poll()
             except OSError as exc:
@@ -387,6 +393,10 @@ class Companion:
             surname = self.identity and self.combat_log.surname_for(self.identity.get("name"))
             if surname:
                 payload["identity"] = {**self.identity, "surname": surname}
+            # The target's health, when the game keeps it secret from the addon.
+            seen = self.combat_log.watched
+            if target and target.get("pct") is None and seen and seen["guid"] == guid:
+                target.update(health=seen["health"], healthMax=seen["healthMax"], healthAt=seen["t"])
         if self.quests_dirty:
             payload["quests"] = self.quests
         if self.gear_dirty:

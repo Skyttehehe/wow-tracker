@@ -139,6 +139,10 @@ h2 { font-size: 16px; color: var(--gold); }
 .flag.dead { border-color: #777; color: #ccc; }
 .flag.resting { border-color: var(--rested); color: #9cc2ff; }
 .vitals-note { margin: 4px 0 0; }
+.target { margin: 4px 0 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.target .who { color: var(--text); font-weight: 600; }
+.target .rank { margin-left: 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--gold); }
+.bar.enemy .fill { background: linear-gradient(90deg, #8f2219, var(--rage)); }
 
 /* map */
 .coords { font: 500 14px "JetBrains Mono", monospace; color: var(--gold); background: var(--bg-2); padding: 4px 10px; border-radius: 8px; }
