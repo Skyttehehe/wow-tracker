@@ -112,8 +112,9 @@ Problems
 --------
 - Nothing shows up: check Screen Recording (step 3) and the code (minimap
   button). The log is in ~/Library/Application Support/ForeverTracker.
-- "Temporary copy" message: move the ForeverTracker folder out of AddOns and
-  back in with Finder, then open the app again.
+- "Temporary copy" message (the folder isn't in AddOns): put it there; or in
+  Terminal type  xattr -dr com.apple.quarantine  and a space, drag this
+  ForeverTracker folder into the window, press Return, and open the app again.
 
 Uninstall
 ---------

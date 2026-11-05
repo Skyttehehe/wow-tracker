@@ -44,6 +44,7 @@ ADDON_SRC = (os.path.join(sys._MEIPASS, "addon", "ForeverTracker") if FROZEN
              else os.path.join(APP_DIR, "..", "addon", "ForeverTracker"))
 DEFAULT_BACKEND = "https://wow.osrs.dk"
 APP_KEY = "ForeverTracker"   # name of the startup and Apps & features entries
+EXE_NAME = "ForeverTrackerCompanion"
 # Commands run from the windowless exe would otherwise flash a console window.
 NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
 SV_NAME = "ForeverTracker.lua"
@@ -370,14 +371,36 @@ def single_instance():
 LAUNCH_AGENT = os.path.expanduser("~/Library/LaunchAgents/com.forevertracker.companion.plist")
 
 
+def untranslocate():
+    """A downloaded app runs from a random read-only copy ("App Translocation")
+    until its quarantine mark is gone; the login item would point at that copy.
+    Finds the real addon folder through the game's location, clears the mark
+    there and starts the app again from it. False if the folder can't be found."""
+    wow = detect_wow_path()
+    folder = os.path.join(wow, "_forever_", "Interface", "AddOns", "ForeverTracker") if wow else None
+    app = folder and os.path.join(folder, EXE_NAME + ".app")
+    if not (app and os.path.isdir(app)):
+        return False
+    subprocess.run(["xattr", "-dr", "com.apple.quarantine", folder], capture_output=True, timeout=30)
+    handle = getattr(single_instance, "handle", None)
+    if handle:
+        handle.close()  # let the new copy take the single-instance lock
+    subprocess.run(["open", "-n", app], capture_output=True, timeout=30)
+    log(f"started again from {app} (was running from a temporary copy)")
+    return True
+
+
 def mac_checks():
-    """Mac app: refuses to run from macOS's temporary read-only copy (the login
-    item would point at it), and asks for Screen Recording, which reading the
-    in-game strip needs. Returns False when it should quit."""
+    """Mac app: leaves macOS's temporary read-only copy (see untranslocate), and
+    asks for Screen Recording, which reading the in-game strip needs. Returns
+    False when this copy should quit."""
     if "/AppTranslocation/" in sys.executable:
-        message_box("macOS is running Forever Tracker from a temporary copy.\n\nIn Finder, move the "
-                    "ForeverTracker folder out of AddOns and back in (or into AddOns if it isn't there "
-                    "yet), then open ForeverTrackerCompanion again.", error=True)
+        if not untranslocate():
+            message_box("macOS is running Forever Tracker from a temporary copy, and the ForeverTracker "
+                        "folder wasn't found in World of Warcraft/_forever_/Interface/AddOns.\n\nPut the "
+                        "folder there. Or open Terminal, type: xattr -dr com.apple.quarantine (and a space), "
+                        "drag the ForeverTracker folder into the Terminal window, press Return, and open "
+                        "ForeverTrackerCompanion again.", error=True)
         return False
     try:
         import Quartz
