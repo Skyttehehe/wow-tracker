@@ -135,16 +135,22 @@ reads the screen only while the game runs.
 The exe is needed because addons can't reach the network; it reads the in-game strip and the saved file and
 uploads them. Every friend's uploads count towards the same Upstash command budget.
 
-**Building and publishing the package:**
+**Mac:** the same folder with `ForeverTrackerCompanion.app` inside. The first time, a friend right-clicks the app →
+*Open* (it isn't signed by an Apple developer account) and allows Screen Recording in System Settings → Privacy &
+Security, which reading the game window needs. It then runs without a Dock icon and starts at login (a LaunchAgent).
+`Uninstall Forever Tracker.command` in the folder removes it. Builds are for Apple Silicon Macs.
+
+**Building and publishing:** bump `## Version` in the addon's `.toc`, push, then publish a release:
 
 ```bash
-python -m pip install pyinstaller pillow
-python tools/package.py                # -> dist/ForeverTracker-<version>.zip and dist/ForeverTracker.zip
-gh release create v<version> dist/ForeverTracker.zip dist/ForeverTracker-<version>.zip
+gh release create v<version> --title "Forever Tracker <version>" --notes "..."
 ```
 
-The site's footer links to `releases/latest/download/ForeverTracker.zip`, so a new release updates the download.
-When a friend runs a newer exe, it also updates the addon files next to it.
+`.github/workflows/release.yml` then builds both packages on GitHub's Windows and macOS machines
+(`tools/package.py`, which only builds for the platform it runs on), self-tests them and attaches
+`ForeverTracker.zip` and `ForeverTracker-mac.zip` to the release. The site's footer links to
+`releases/latest/download/...`, so the downloads update by themselves. When a friend runs a newer app, it also updates
+the addon files next to it.
 
 #### On your own server (Proxmox CT)
 

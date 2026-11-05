@@ -28,11 +28,20 @@ import urllib.request
 import combatlog
 import strip
 
-# Packaged as an exe (tools/package.py): config next to the exe, addon bundled inside.
+# Packaged by tools/package.py as a Windows exe or a Mac app, with the addon bundled inside.
 FROZEN = getattr(sys, "frozen", False)
-HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
+MAC = sys.platform == "darwin"
+if FROZEN and MAC and ".app/Contents/MacOS" in sys.executable:
+    # The folder holding ForeverTrackerCompanion.app (normally the addon folder).
+    APP_DIR = os.path.dirname(sys.executable.split(".app/Contents/MacOS")[0] + ".app")
+else:
+    APP_DIR = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
+# Config and log: next to the program, except the Mac app keeps them in Application
+# Support (macOS may run a downloaded app from a read-only copy).
+HERE = (os.path.expanduser("~/Library/Application Support/ForeverTracker") if FROZEN and MAC
+        else APP_DIR)
 ADDON_SRC = (os.path.join(sys._MEIPASS, "addon", "ForeverTracker") if FROZEN
-             else os.path.join(HERE, "..", "addon", "ForeverTracker"))
+             else os.path.join(APP_DIR, "..", "addon", "ForeverTracker"))
 DEFAULT_BACKEND = "https://wow.osrs.dk"
 APP_KEY = "ForeverTracker"   # name of the startup and Apps & features entries
 # Commands run from the windowless exe would otherwise flash a console window.
@@ -49,6 +58,7 @@ def log(msg):
     # The exe has no console: keep a small log file next to it.
     path = os.path.join(HERE, "companion.log")
     try:
+        os.makedirs(HERE, exist_ok=True)
         if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
             os.replace(path, path + ".old")
         with open(path, "a", encoding="utf-8") as f:
@@ -57,11 +67,28 @@ def log(msg):
         pass
 
 
+def applescript_text(text):
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def mac_dialog(text, buttons, error=False):
+    """An AppleScript dialog; returns the button clicked, or None if cancelled."""
+    icon = "caution" if error else "note"
+    script = (f"display dialog {applescript_text(text)} with title \"Forever Tracker\" with icon {icon} "
+              f"buttons {{{', '.join(applescript_text(b) for b in buttons)}}} "
+              f"default button {applescript_text(buttons[-1])}")
+    out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    m = re.search(r"button returned:(.*)", out.stdout)
+    return m.group(1).strip() if m else None
+
+
 def message_box(text, error=False):
-    """A Windows message box from the windowless exe (stdout elsewhere)."""
+    """A dialog from the windowless app (stdout when run as a script)."""
     if FROZEN and sys.platform == "win32":
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, text, "Forever Tracker", 0x10 if error else 0x40)
+    elif FROZEN and MAC:
+        mac_dialog(text, ["OK"], error)
     else:
         print(text)
 
@@ -261,7 +288,7 @@ def is_wow_root(path):
 
 def wow_from_location():
     """The game folder when this runs from inside it (e.g. Interface/AddOns/ForeverTracker)."""
-    path = HERE
+    path = APP_DIR
     while True:
         parent = os.path.dirname(path)
         if os.path.basename(path).lower() == "_forever_":
@@ -292,6 +319,8 @@ def detect_wow_path():
             candidates += [f"{drive}:\\Program Files (x86)\\World of Warcraft",
                            f"{drive}:\\Program Files\\World of Warcraft", f"{drive}:\\World of Warcraft",
                            f"{drive}:\\Games\\World of Warcraft"]
+    elif MAC:
+        candidates += ["/Applications/World of Warcraft", os.path.expanduser("~/Applications/World of Warcraft")]
     return next((c for c in candidates if is_wow_root(c)), None)
 
 
@@ -302,28 +331,65 @@ def first_run(path):
         while not is_wow_root(wow):
             wow = input("Paste your World of Warcraft folder (the one that contains _forever_): ").strip().strip('"')
     if not wow:
-        message_box("Couldn't find World of Warcraft.\n\nPut the ForeverTracker folder in\n"
-                    "World of Warcraft\\_forever_\\Interface\\AddOns\nand run "
-                    "ForeverTrackerCompanion.exe from there.", error=True)
+        where = ("World of Warcraft/_forever_/Interface/AddOns" if MAC
+                 else "World of Warcraft\\_forever_\\Interface\\AddOns")
+        message_box(f"Couldn't find World of Warcraft.\n\nPut the ForeverTracker folder in\n{where}\n"
+                    "and open ForeverTrackerCompanion from there.", error=True)
         sys.exit(1)
     cfg = {"wow_path": wow, "backend_url": DEFAULT_BACKEND,
            "poll_seconds": 2, "live_seconds": 2, "heartbeat_seconds": 30}
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
     log(f"first run: game in {wow}; saved {path}")
     message_box("Forever Tracker is set up and now runs in the background. It starts by itself "
-                "with Windows, so you don't need to open it again.\n\nIn game, click the Forever "
-                "Tracker button on the minimap and paste the code you were given.")
+                f"when you log in to {'your Mac' if MAC else 'Windows'}, so you don't need to open it "
+                "again.\n\nIn game, click the Forever Tracker button on the minimap and paste the code "
+                "you were given.")
     return cfg
 
 
 def single_instance():
-    """False when another copy is already running (Windows exe only)."""
-    if not (FROZEN and sys.platform == "win32"):
+    """False when another copy is already running (packaged app only)."""
+    if not FROZEN:
         return True
-    import ctypes
-    single_instance.handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ForeverTrackerCompanion")
-    return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    if sys.platform == "win32":
+        import ctypes
+        single_instance.handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ForeverTrackerCompanion")
+        return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    import fcntl
+    os.makedirs(HERE, exist_ok=True)
+    single_instance.handle = open(os.path.join(HERE, "companion.lock"), "w")
+    try:
+        fcntl.flock(single_instance.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+LAUNCH_AGENT = os.path.expanduser("~/Library/LaunchAgents/com.forevertracker.companion.plist")
+
+
+def mac_checks():
+    """Mac app: refuses to run from macOS's temporary read-only copy (the login
+    item would point at it), and asks for Screen Recording, which reading the
+    in-game strip needs. Returns False when it should quit."""
+    if "/AppTranslocation/" in sys.executable:
+        message_box("macOS is running Forever Tracker from a temporary copy.\n\nIn Finder, move the "
+                    "ForeverTracker folder out of AddOns and back in (or into AddOns if it isn't there "
+                    "yet), then open ForeverTrackerCompanion again.", error=True)
+        return False
+    try:
+        import Quartz
+        if not Quartz.CGPreflightScreenCaptureAccess():
+            Quartz.CGRequestScreenCaptureAccess()
+            message_box("Forever Tracker needs Screen Recording permission to read your character from "
+                        "the game window.\n\nIn System Settings > Privacy & Security > Screen Recording, "
+                        "turn on ForeverTrackerCompanion, then open it again.")
+            log("asked for the Screen Recording permission")
+    except (ImportError, AttributeError) as exc:
+        log(f"couldn't check the Screen Recording permission: {exc}")
+    return True
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -331,9 +397,18 @@ APPS_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall" + "\\" + APP_K
 
 
 def autostart(cfg):
-    """Starts the exe with Windows and lists it under Settings > Apps (per user,
-    no admin), pointing at wherever it lives now."""
-    if not (FROZEN and sys.platform == "win32") or cfg.get("autostart") is False:
+    """Starts the app at login (per user, no admin), pointing at wherever it lives
+    now. Windows also lists it under Settings > Apps for uninstalling."""
+    if not FROZEN or cfg.get("autostart") is False:
+        return
+    if MAC:
+        import plistlib
+        os.makedirs(os.path.dirname(LAUNCH_AGENT), exist_ok=True)
+        with open(LAUNCH_AGENT, "wb") as f:
+            plistlib.dump({"Label": "com.forevertracker.companion", "ProgramArguments": [sys.executable],
+                           "RunAtLoad": True, "ProcessType": "Interactive"}, f)
+        return
+    if sys.platform != "win32":
         return
     import winreg
     exe = sys.executable
@@ -344,7 +419,7 @@ def autostart(cfg):
                             ("DisplayVersion", addon_version(ADDON_SRC) or ""),
                             ("Publisher", "Forever Tracker"),
                             ("DisplayIcon", exe),
-                            ("InstallLocation", HERE),
+                            ("InstallLocation", APP_DIR),
                             ("UninstallString", f'"{exe}" --uninstall')):
             winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
         for name in ("NoModify", "NoRepair"):
@@ -357,10 +432,19 @@ def ask_yes_no(text):
     if FROZEN and sys.platform == "win32":
         import ctypes
         return ctypes.windll.user32.MessageBoxW(None, text, "Forever Tracker", 0x4 | 0x20) == 6  # YES
+    if FROZEN and MAC:
+        return mac_dialog(text, ["Cancel", "Remove"]) == "Remove"
     return input(text + " [y/N] ").strip().lower().startswith("y")
 
 
 def remove_registry_entries():
+    """Takes the app out of login startup (and, on Windows, Settings > Apps)."""
+    if MAC:
+        try:
+            os.remove(LAUNCH_AGENT)
+        except OSError:
+            pass
+        return
     if sys.platform != "win32":
         return
     import winreg
@@ -380,6 +464,15 @@ def stop_other_instances():
     if sys.platform == "win32" and FROZEN:
         subprocess.run(["taskkill", "/F", "/IM", os.path.basename(sys.executable),
                         "/FI", f"PID ne {os.getpid()}"], capture_output=True, timeout=15, **NO_WINDOW)
+    elif MAC and FROZEN:
+        out = subprocess.run(["pgrep", "-f", "ForeverTrackerCompanion.app/Contents/MacOS"],
+                             capture_output=True, text=True, timeout=15).stdout
+        for pid in out.split():
+            if pid.isdigit() and int(pid) != os.getpid():
+                try:
+                    os.kill(int(pid), 15)
+                except OSError:
+                    pass
 
 
 def saved_variable_files(wow_path):
@@ -394,7 +487,7 @@ def is_addon_folder(path):
 
 def addon_folders(wow_path):
     """This exe's own folder when it is the addon, plus the installed addon."""
-    found = [HERE] if is_addon_folder(HERE) else []
+    found = [APP_DIR] if is_addon_folder(APP_DIR) else []
     installed = os.path.join(wow_path or "", "_forever_", "Interface", "AddOns", "ForeverTracker")
     if is_addon_folder(installed) and os.path.normcase(os.path.abspath(installed)) not in \
             [os.path.normcase(os.path.abspath(f)) for f in found]:
@@ -403,8 +496,10 @@ def addon_folders(wow_path):
 
 
 def delete_folder(path):
-    """Deletes a folder; the one this exe runs from goes a moment after it exits."""
-    if FROZEN and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(HERE)):
+    """Deletes a folder; on Windows the one this exe runs from goes a moment after
+    it exits (a running exe's file is locked there; macOS doesn't mind)."""
+    if (FROZEN and sys.platform == "win32"
+            and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(APP_DIR))):
         subprocess.Popen(f'cmd /c ping 127.0.0.1 -n 3 > nul & rmdir /s /q "{path}"', **NO_WINDOW)
     else:
         shutil.rmtree(path, ignore_errors=True)
@@ -420,8 +515,8 @@ def uninstall(cfg, confirm=True):
         return False
     folders = addon_folders(wow)
     if confirm and not ask_yes_no(
-            "Remove Forever Tracker from this PC?\n\nThis stops it, takes it out of Windows startup, "
-            "and deletes the addon and its saved settings, including your code."):
+            f"Remove Forever Tracker from this {'Mac' if MAC else 'PC'}?\n\nThis stops it, takes it out "
+            "of startup, and deletes the addon and its saved settings, including your code."):
         return False
     stop_other_instances()
     remove_registry_entries()
@@ -433,6 +528,8 @@ def uninstall(cfg, confirm=True):
     for folder in folders:
         delete_folder(folder)
     log("uninstalled")
+    if FROZEN and MAC:
+        shutil.rmtree(HERE, ignore_errors=True)  # config and log in Application Support
     if confirm:
         message_box("Forever Tracker has been removed.\n\nYour character stays on the website until "
                     "whoever runs it takes it off.")
@@ -494,6 +591,7 @@ class Companion:
         self.live = cfg.get("live", True)
         self.game_up = True       # is WoW running? checked every GAME_CHECK seconds
         self.game_checked = 0
+        self.game_up_since = time.time()
         self.capture = None
         self.reasm = strip.Reassembler()
         self.frame = None
@@ -715,7 +813,15 @@ class Companion:
             if up != self.game_up:
                 log("World of Warcraft started; watching the screen" if up
                     else "World of Warcraft closed; not watching the screen")
+            if up and not self.game_up:
+                self.game_up_since = now
             self.game_up = up
+            # The game runs but the strip never decodes: say why that usually is.
+            if up and now - max(self.game_up_since, self.frame_at) > 120:
+                self.problem("WoW is running but the in-game strip can't be read: log in to a character, "
+                             "keep WoW on the main screen and not minimised"
+                             + (", and allow Screen Recording for ForeverTrackerCompanion in System "
+                                "Settings > Privacy & Security" if MAC else ""))
 
         if self.live and self.game_up:
             try:
@@ -758,7 +864,21 @@ def main():
     ap.add_argument("--setup", action="store_true", help="find the game folder again")
     ap.add_argument("--uninstall", action="store_true",
                     help="stop it, remove it from startup, delete the addon and its saved settings")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check that the packaged app starts and can set up screen capture, then exit")
     args = ap.parse_args()
+
+    if args.selftest:
+        # Used by the release build (CI): no dialogs, no config, no network.
+        print(f"Forever Tracker companion {addon_version(ADDON_SRC)} on {sys.platform}, frozen={FROZEN}")
+        print(f"bundled addon: {sorted(os.listdir(ADDON_SRC))}")
+        capture = strip.make_capture()
+        print(f"capture: {type(capture).__name__}")
+        try:
+            print(f"one grab: {'strip found' if capture.grab() else 'no strip (expected without WoW)'}")
+        except Exception as exc:  # noqa: BLE001 - no screen access in CI is fine
+            print(f"one grab failed (expected without a screen): {exc}")
+        return
 
     if args.uninstall:
         cfg = {}
@@ -770,6 +890,8 @@ def main():
 
     if not args.dump and not single_instance():
         message_box("Forever Tracker is already running in the background.")
+        return
+    if FROZEN and MAC and not mac_checks():
         return
     if args.setup or not os.path.isfile(args.config):
         cfg = first_run(args.config)

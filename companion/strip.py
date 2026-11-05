@@ -176,10 +176,101 @@ class ScreenCapture:
         return cells_to_bytes([img.getpixel((i * CELL_PX + CELL_PX // 2, y)) for i in range(NUM_CELLS)])
 
 
+def sample_strip(pixel, width, height):
+    """Reads the strip from an image whose cells may be larger than CELL_PX
+    (Retina screens, or the game rendering at another resolution).
+
+    pixel(x, y) -> (r, g, b). The first cell always holds "F", "T", version,
+    so its width gives the cell size; then each cell's centre is sampled.
+    Returns the strip bytes, or None if the strip isn't there."""
+    if width < 2 or height < 2:
+        return None
+    first = pixel(1, 1)
+    if first[0] != 70 or first[1] != 84 or first[2] not in VERSIONS:
+        return None
+    size = 1
+    while size < width and pixel(size, 1) == first:
+        size += 1
+    if size < CELL_PX // 2 or NUM_CELLS * size > width or size // 2 >= height:
+        return None
+    y = size // 2
+    return cells_to_bytes([pixel(i * size + size // 2, y) for i in range(NUM_CELLS)])
+
+
+def channel_order(bitmap_info):
+    """(r, g, b) byte offsets in a 32-bit CoreGraphics pixel."""
+    alpha_first = (bitmap_info & 0x1F) in (2, 4, 6)   # premultiplied/plain/none-skip "first"
+    little = (bitmap_info & 0x7000) == 0x2000          # kCGBitmapByteOrder32Little
+    if little:
+        return (2, 1, 0) if alpha_first else (3, 2, 1)  # BGRA / ABGR in memory
+    return (1, 2, 3) if alpha_first else (0, 1, 2)      # ARGB / RGBA in memory
+
+
+class MacCapture:
+    """macOS: reads the strip from the WoW window itself through CoreGraphics
+    (pyobjc), in the window's own colours (macOS colour management would change
+    the bytes of a plain screenshot), also while the window is covered.
+    Needs the Screen Recording permission."""
+
+    REGION_PT = (2 * WIDTH, 2 * CELL_PX)  # points captured: room for 2x cells
+
+    def __init__(self):
+        import Quartz
+        self.Q = Quartz
+        self.window = None      # (id, x, y, width, height) in points
+        self.found_at = 0
+
+    def find_window(self):
+        Q = self.Q
+        infos = Q.CGWindowListCopyWindowInfo(
+            Q.kCGWindowListOptionOnScreenOnly | Q.kCGWindowListExcludeDesktopElements, Q.kCGNullWindowID) or []
+        best = None
+        for info in infos:
+            owner = str(info.get(Q.kCGWindowOwnerName) or "")
+            if not owner.lower().startswith("world of warcraft") or int(info.get(Q.kCGWindowLayer, 0)) != 0:
+                continue
+            b = info.get(Q.kCGWindowBounds) or {}
+            w, h = float(b.get("Width", 0)), float(b.get("Height", 0))
+            if w > WIDTH and (best is None or w * h > best[3] * best[4]):
+                best = (int(info[Q.kCGWindowNumber]), float(b.get("X", 0)), float(b.get("Y", 0)), w, h)
+        return best
+
+    def grab(self):
+        now = time.monotonic()
+        if self.window is None or now - self.found_at > 5:  # the window may move or resize
+            self.window, self.found_at = self.find_window(), now
+        if self.window is None:
+            return None
+        Q = self.Q
+        wid, x, y, w, h = self.window
+        rect = Q.CGRectMake(x, y, min(w, self.REGION_PT[0]), min(h, self.REGION_PT[1]))
+        img = Q.CGWindowListCreateImage(rect, Q.kCGWindowListOptionIncludingWindow, wid,
+                                        Q.kCGWindowImageBoundsIgnoreFraming)
+        if img is None:
+            self.window = None
+            return None
+        width, height = Q.CGImageGetWidth(img), Q.CGImageGetHeight(img)
+        if Q.CGImageGetBitsPerPixel(img) != 32:
+            return None
+        stride = Q.CGImageGetBytesPerRow(img)
+        data = bytes(Q.CGDataProviderCopyData(Q.CGImageGetDataProvider(img)))
+        r, g, b = channel_order(Q.CGImageGetBitmapInfo(img))
+
+        def pixel(px, py):
+            o = py * stride + px * 4
+            return data[o + r], data[o + g], data[o + b]
+        return sample_strip(pixel, width, height)
+
+
 def make_capture():
     if sys.platform.startswith("linux"):
         try:
             return X11Capture()
         except Exception as exc:  # noqa: BLE001
             print(f"X11 capture unavailable ({exc}); falling back to screen grab", flush=True)
+    if sys.platform == "darwin":
+        try:
+            return MacCapture()
+        except Exception as exc:  # noqa: BLE001
+            print(f"window capture unavailable ({exc}); falling back to screen grab", flush=True)
     return ScreenCapture()
