@@ -368,6 +368,9 @@ class Companion:
                 log(f"combat log read failed: {exc}")
             if self.combat_log.vitals:
                 payload["vitals"] = self.combat_log.vitals
+            surname = self.identity and self.combat_log.surname_for(self.identity.get("name"))
+            if surname:
+                payload["identity"] = {**self.identity, "surname": surname}
         if self.quests_dirty:
             payload["quests"] = self.quests
         if self.send(payload):

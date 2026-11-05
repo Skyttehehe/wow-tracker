@@ -34,7 +34,10 @@ and out of combat. The addon never reads or encodes those. Instead, with *Share 
 addon switches on the game's own combat log (`/combatlog` with Advanced Combat Logging, the file Warcraft Logs
 reads). The client writes your current health and power there on every combat action, and `companion/combatlog.py`
 follows the file and keeps only lines for your own character (no data about anyone nearby leaves your PC). The page
-labels these values with their age, since nothing is logged out of combat. The log file grows while you play;
+labels these values with their age, since nothing is logged out of combat. After 30 seconds out of combat with no
+newer reading (`FT_FULL_AFTER` on the backend), health and mana are shown as full, since they will have regenerated.
+The surname (Forever characters have first and last names) also comes from the combat log, where your own lines name
+you as `First-Surname-Realm`; the addon API only returns the first name. The log file grows while you play;
 delete old `Logs/WoWCombatLog-*.txt` files now and then. `/ft debug` lists what's secret right now.
 
 ## In-game

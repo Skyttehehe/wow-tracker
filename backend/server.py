@@ -34,17 +34,18 @@ MAX_BODY = 2 * 1024 * 1024
 
 # Only these snapshot fields are stored and published.
 SNAPSHOT_FIELDS = {
-    "t", "status", "name", "realm", "faction", "race", "class", "classToken", "sex",
+    "t", "status", "name", "surname", "realm", "faction", "race", "class", "classToken", "sex",
     "level", "maxLevel", "xp", "xpMax", "rested", "health", "healthMax", "healthPct", "power",
     "money", "guild", "dead", "ghost", "resting", "combat", "zone", "subzone",
-    "mapID", "map", "x", "y", "vitalsAt",
+    "mapID", "map", "x", "y", "vitalsAt", "vitalsAssumed",
 }
 EVENT_FIELDS = {"t", "type", "level", "zone", "subzone", "x", "y", "mapID",
                 "questID", "title", "xp", "money"}
-IDENTITY_FIELDS = {"name", "realm", "faction", "race", "class", "classToken", "sex", "guild", "maxLevel"}
+IDENTITY_FIELDS = {"name", "surname", "realm", "faction", "race", "class", "classToken", "sex", "guild", "maxLevel"}
 ZONE_FIELDS = {"zone", "subzone", "map"}
 LIVE_FIELDS = {"level", "xp", "xpMax", "rested", "health", "healthMax", "healthPct", "money", "mapID", "x", "y"}
 LIVE_STALE = 10            # seconds; a live frame newer than this beats a file snapshot
+FULL_AFTER = int(os.environ.get("FT_FULL_AFTER", "30"))  # seconds out of combat before vitals count as full
 POSITION_EVERY = 5         # seconds between stored trail points from live data
 XP_EVERY = 30
 MAX_QUESTS = 60
@@ -96,6 +97,7 @@ class Store:
         self.changed = threading.Condition()
         self.last_position = None
         self.last_xp = None
+        self.combat_ended_at = None
 
     def get(self, key):
         row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
@@ -149,6 +151,7 @@ class Store:
                 snap["vitalsAt"] = vitals["t"]
         for k in ("dead", "ghost", "combat", "resting"):
             snap[k] = bool(flags.get(k))
+        self.assume_full(snap, now, frame)
         snap["status"] = "offline" if flags.get("leaving") else "online"
         snap["t"] = frame.get("t") or now
 
@@ -163,6 +166,28 @@ class Store:
             history |= self.sample_live(snap, now)
         self.put("presence", {"online": snap["status"] == "online", "t": now})
         return history
+
+    def assume_full(self, snap, now, frame):
+        """After FULL_AFTER seconds out of combat with no newer combat-log
+        reading, health and power have regenerated: show them as full (rage
+        as empty)."""
+        snap["vitalsAssumed"] = False
+        if snap["combat"] or self.combat_ended_at is None:
+            self.combat_ended_at = None if snap["combat"] else now
+            return
+        if snap["dead"] or snap["ghost"] or now - self.combat_ended_at < FULL_AFTER:
+            return
+        if snap["vitalsAt"] and now - snap["vitalsAt"] < FULL_AFTER:
+            return
+        power = snap.get("power") or {}
+        if power.get("max") and (frame.get("power") or {}).get("cur") is None:
+            snap["power"] = {**power, "cur": 0 if power.get("type") == "RAGE" else power["max"]}
+            snap["vitalsAssumed"] = True
+        if snap.get("healthMax") and frame.get("health") is None:
+            snap["health"] = snap["healthMax"]
+            snap["vitalsAssumed"] = True
+        if snap["vitalsAssumed"]:
+            snap["vitalsAt"] = None
 
     def sample_live(self, s, now):
         """Adds trail and XP points from live data at a modest rate."""
@@ -200,6 +225,10 @@ class Store:
                         if k in SNAPSHOT_FIELDS}
                 if not snap.get("name"):
                     raise ValueError("snapshot without character name")
+                # The saved file has no surname; keep the one live data gave us.
+                old = self.get("snapshot") or {}
+                if old.get("name") == snap["name"] and old.get("surname"):
+                    snap["surname"] = old["surname"]
                 # While live data flows it is fresher than any saved file.
                 live = now - (self.get("liveAt") or 0) < LIVE_STALE
                 if not live:

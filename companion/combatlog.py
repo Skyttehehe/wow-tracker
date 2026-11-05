@@ -21,6 +21,7 @@ GUID = re.compile(r"^[A-Za-z]+-[0-9A-F]+(-[0-9A-F]+)*$")
 NO_OWNER = "0000000000000000"
 POWER_TYPES = {"0": "MANA", "1": "RAGE", "2": "FOCUS", "3": "ENERGY"}
 BACKFILL = 64 * 1024  # bytes read from the end of a log when first opened
+IDENTITY_SCAN = 8 * 1024 * 1024  # bytes searched from the start for our own name
 
 
 def find_log(wow_path):
@@ -45,6 +46,8 @@ class CombatLogTail:
         self.offset = 0
         self.partial = b""
         self.me = None          # player GUID, learned from "mine + player" source flags
+        self.full_name = None   # e.g. "Pattes-Heals-PvP-EU": first name, surname, realm
+        self.surnames = {}      # first name -> surname, kept across log files
         self.vitals = None      # latest {"t", "health", "healthMax", "power": {...}}
         self.next_check = 0
 
@@ -76,6 +79,34 @@ class CombatLogTail:
             lines.pop(0)            # we started mid-line
         for raw in lines:
             self.parse(raw.decode("utf-8", "replace").rstrip("\r"))
+        if self.me is None and skip_first:
+            self.learn_identity(path)
+
+    def learn_identity(self, path):
+        """Finds our GUID and full name earlier in the log when the recent
+        backfill had no line of ours (e.g. after standing idle)."""
+        with open(path, "rb") as f:
+            for raw in f:
+                if f.tell() > IDENTITY_SCAN:
+                    return
+                fields = raw.decode("utf-8", "replace").partition("  ")[2].split(",", 4)
+                if len(fields) < 4 or not fields[1].startswith("Player-"):
+                    continue
+                try:
+                    flags = int(fields[3], 16)
+                except ValueError:
+                    continue
+                if flags & MINE and flags & PLAYER:
+                    self.me, self.full_name = fields[1], fields[2].strip('"')
+                    return
+
+    def surname_for(self, first):
+        """The surname from the log's "First-Surname-Realm-Region" name, if the
+        first name matches the character the addon reports."""
+        parts = (self.full_name or "").split("-")
+        if first and len(parts) >= 4 and parts[0] == first:
+            self.surnames[first] = parts[1]
+        return self.surnames.get(first)
 
     def parse(self, line):
         stamp, sep, body = line.partition("  ")
@@ -94,7 +125,7 @@ class CombatLogTail:
             except ValueError:
                 flags = 0
             if flags & MINE and flags & PLAYER:
-                self.me = fields[1]
+                self.me, self.full_name = fields[1], fields[2]
         if self.me is None:
             return
         for i in range(1, len(fields) - 13):

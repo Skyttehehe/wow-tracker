@@ -104,9 +104,10 @@ function mapSize(mapID) {
 function renderHero(s) {
   const color = CLASS_COLORS[s.classToken] || "var(--gold)";
   document.documentElement.style.setProperty("--class", color);
-  document.title = `${s.name} · Forever Tracker`;
+  const fullName = [s.name, s.surname].filter(Boolean).join(" ");
+  document.title = `${fullName} · Forever Tracker`;
   $("crest").textContent = (s.class || "?").charAt(0);
-  $("name").textContent = s.name;
+  $("name").textContent = fullName;
   $("realm").textContent = [s.realm, s.faction].filter(Boolean).join(" · ") || "World of Warcraft: Forever";
   $("subtitle").textContent = [`Level ${s.level ?? "?"} ${s.race ?? ""} ${s.class ?? ""}`, s.guild && `<${s.guild}>`]
     .filter(Boolean).join("  ·  ");
@@ -193,7 +194,9 @@ function renderVitals(s) {
   $("flags").innerHTML = flags.map(([c, t]) => `<span class="flag ${c}">${t}</span>`).join("");
 
   const notes = [];
-  if (s.vitalsAt) {
+  if (s.vitalsAssumed) {
+    notes.push("Out of combat for a while, so health and mana are assumed to have regenerated to full.");
+  } else if (s.vitalsAt) {
     notes.push(`From the game's combat log at your last combat action (${ago(s.vitalsAt)}).`);
   } else if (!hp || !pw) {
     notes.push("WoW Forever keeps current health and power secret from addons; only the maximum is shown.");
@@ -274,7 +277,7 @@ function renderMe(s) {
   me.classList.toggle("jump", mapChanged || !me.dataset.placed);
   me.style.transform = `translate(${s.x * W}px, ${s.y * H}px)`;
   me.dataset.placed = "1";
-  me.dataset.tip = `${s.name} · ${s.zone || ""}`;
+  me.dataset.tip = `${[s.name, s.surname].filter(Boolean).join(" ")} · ${s.zone || ""}`;
   if (mapChanged) renderTrail(s);
 }
 
