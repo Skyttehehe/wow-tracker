@@ -60,10 +60,16 @@ Problems
 - Nothing shows up: keep WoW on your main monitor and not minimised, and
   check that the code is right (minimap button). companion.log in this
   folder says what's going on.
-- To stop it starting with Windows: Task Manager -> Startup apps ->
-  ForeverTracker -> Disable.
+
+Uninstall
+---------
+Close WoW, then either open Windows Settings -> Apps -> Installed apps ->
+Forever Tracker -> Uninstall, or double-click "Uninstall Forever Tracker.bat"
+in this folder. It stops the companion, takes it out of Windows startup and
+deletes this folder and the addon's saved settings (including your code).
 """
 
+UNINSTALL_BAT = '@start "" "%~dp0ForeverTrackerCompanion.exe" --uninstall\r\n'
 
 def version():
     with open(os.path.join(ADDON, "ForeverTracker.toc"), encoding="utf-8") as f:
@@ -95,6 +101,7 @@ def main():
             z.write(os.path.join(ADDON, name), f"ForeverTracker/{name}")
         z.write(os.path.join(BUILD, "exe", EXE + ".exe"), f"ForeverTracker/{EXE}.exe")
         z.writestr("ForeverTracker/README.txt", README.format(version=ver, site=site()).replace("\n", "\r\n"))
+        z.writestr("ForeverTracker/Uninstall Forever Tracker.bat", UNINSTALL_BAT)
     shutil.rmtree(os.path.join(BUILD, "work"), ignore_errors=True)
     # The site's footer links to releases/latest/download/ForeverTracker.zip.
     shutil.copyfile(out, os.path.join(DIST, "ForeverTracker.zip"))

@@ -34,6 +34,9 @@ HERE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 ADDON_SRC = (os.path.join(sys._MEIPASS, "addon", "ForeverTracker") if FROZEN
              else os.path.join(HERE, "..", "addon", "ForeverTracker"))
 DEFAULT_BACKEND = "https://wow.osrs.dk"
+APP_KEY = "ForeverTracker"   # name of the startup and Apps & features entries
+# Commands run from the windowless exe would otherwise flash a console window.
+NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
 SV_NAME = "ForeverTracker.lua"
 GAME_PROCESS = re.compile(r"^wow(classic|forever|t|b)?(-64)?\.exe$|^world of warcraft", re.I)
 
@@ -213,7 +216,7 @@ def game_running():
             return False
         if sys.platform == "win32":
             out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
-                                 text=True, timeout=10).stdout
+                                 text=True, timeout=10, **NO_WINDOW).stdout
             names = [line.split('","')[0].strip('"') for line in out.splitlines()]
         else:
             out = subprocess.run(["ps", "-axo", "comm"], capture_output=True,
@@ -323,13 +326,117 @@ def single_instance():
     return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
 
 
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+APPS_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall" + "\\" + APP_KEY
+
+
 def autostart(cfg):
-    """Starts the exe with Windows (per user, no admin), wherever it lives now."""
+    """Starts the exe with Windows and lists it under Settings > Apps (per user,
+    no admin), pointing at wherever it lives now."""
     if not (FROZEN and sys.platform == "win32") or cfg.get("autostart") is False:
         return
     import winreg
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
-        winreg.SetValueEx(k, "ForeverTracker", 0, winreg.REG_SZ, f'"{sys.executable}"')
+    exe = sys.executable
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+        winreg.SetValueEx(k, APP_KEY, 0, winreg.REG_SZ, f'"{exe}"')
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, APPS_KEY) as k:
+        for name, value in (("DisplayName", "Forever Tracker"),
+                            ("DisplayVersion", addon_version(ADDON_SRC) or ""),
+                            ("Publisher", "Forever Tracker"),
+                            ("DisplayIcon", exe),
+                            ("InstallLocation", HERE),
+                            ("UninstallString", f'"{exe}" --uninstall')):
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
+        for name in ("NoModify", "NoRepair"):
+            winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, 1)
+
+
+# --- uninstall ----------------------------------------------------------------
+
+def ask_yes_no(text):
+    if FROZEN and sys.platform == "win32":
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(None, text, "Forever Tracker", 0x4 | 0x20) == 6  # YES
+    return input(text + " [y/N] ").strip().lower().startswith("y")
+
+
+def remove_registry_entries():
+    if sys.platform != "win32":
+        return
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, APP_KEY)
+    except OSError:
+        pass
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, APPS_KEY)
+    except OSError:
+        pass
+
+
+def stop_other_instances():
+    """Ends the copy running in the background (not this one)."""
+    if sys.platform == "win32" and FROZEN:
+        subprocess.run(["taskkill", "/F", "/IM", os.path.basename(sys.executable),
+                        "/FI", f"PID ne {os.getpid()}"], capture_output=True, timeout=15, **NO_WINDOW)
+
+
+def saved_variable_files(wow_path):
+    pattern = os.path.join(wow_path or "", "_*_", "WTF", "Account", "*", "SavedVariables", SV_NAME)
+    return [p for g in (pattern, pattern + ".bak") for p in glob.glob(g)]
+
+
+def is_addon_folder(path):
+    return (os.path.isfile(os.path.join(path, "ForeverTracker.toc"))
+            and os.path.basename(os.path.dirname(path)).lower() == "addons")
+
+
+def addon_folders(wow_path):
+    """This exe's own folder when it is the addon, plus the installed addon."""
+    found = [HERE] if is_addon_folder(HERE) else []
+    installed = os.path.join(wow_path or "", "_forever_", "Interface", "AddOns", "ForeverTracker")
+    if is_addon_folder(installed) and os.path.normcase(os.path.abspath(installed)) not in \
+            [os.path.normcase(os.path.abspath(f)) for f in found]:
+        found.append(installed)
+    return found
+
+
+def delete_folder(path):
+    """Deletes a folder; the one this exe runs from goes a moment after it exits."""
+    if FROZEN and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(HERE)):
+        subprocess.Popen(f'cmd /c ping 127.0.0.1 -n 3 > nul & rmdir /s /q "{path}"', **NO_WINDOW)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def uninstall(cfg, confirm=True):
+    """Stops the companion, removes the startup and Apps entries, the addon
+    and its saved settings (with the code). Returns True when done."""
+    wow = cfg.get("wow_path") or wow_from_location() or detect_wow_path()
+    if game_running():
+        message_box("Close World of Warcraft first, then uninstall again.\n\n"
+                    "(While it runs, the game would save Forever Tracker's settings again.)", error=True)
+        return False
+    folders = addon_folders(wow)
+    if confirm and not ask_yes_no(
+            "Remove Forever Tracker from this PC?\n\nThis stops it, takes it out of Windows startup, "
+            "and deletes the addon and its saved settings, including your code."):
+        return False
+    stop_other_instances()
+    remove_registry_entries()
+    for path in saved_variable_files(wow):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    for folder in folders:
+        delete_folder(folder)
+    log("uninstalled")
+    if confirm:
+        message_box("Forever Tracker has been removed.\n\nYour character stays on the website until "
+                    "whoever runs it takes it off.")
+    return True
 
 
 def addon_version(folder):
@@ -368,6 +475,7 @@ class Companion:
     LIVE_EVERY = 1.0      # seconds between live uploads (config: live_seconds)
     CAPTURE_EVERY = 0.05  # seconds between strip reads
     LIVE_STALE = 3.0      # no valid strip for this long = not live
+    GAME_CHECK = 5.0      # seconds between "is WoW running?" checks
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -384,6 +492,8 @@ class Companion:
         self.last_file_check = 0
 
         self.live = cfg.get("live", True)
+        self.game_up = True       # is WoW running? checked every GAME_CHECK seconds
+        self.game_checked = 0
         self.capture = None
         self.reasm = strip.Reassembler()
         self.frame = None
@@ -598,7 +708,16 @@ class Companion:
                 self.pending = None
                 self.last_heartbeat = now
 
-        if self.live:
+        if self.live and now - self.game_checked >= self.GAME_CHECK:
+            self.game_checked = now
+            # Unknown (None) counts as running, so capture still works if the check fails.
+            up = game_running() is not False
+            if up != self.game_up:
+                log("World of Warcraft started; watching the screen" if up
+                    else "World of Warcraft closed; not watching the screen")
+            self.game_up = up
+
+        if self.live and self.game_up:
             try:
                 self.read_strip(now)
             except Exception as exc:  # noqa: BLE001 - capture is best effort
@@ -626,7 +745,9 @@ class Companion:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - keep the watcher alive
                 log(f"error: {exc}")
-            time.sleep(self.CAPTURE_EVERY if self.live else self.poll)
+            # Read the strip ~20 times a second while the game runs; otherwise
+            # just look at the saved file now and then.
+            time.sleep(self.CAPTURE_EVERY if self.live and self.game_up else self.poll)
 
 
 def main():
@@ -635,7 +756,17 @@ def main():
     ap.add_argument("--dump", action="store_true",
                     help="parse the SavedVariables file once, print the payload and exit")
     ap.add_argument("--setup", action="store_true", help="find the game folder again")
+    ap.add_argument("--uninstall", action="store_true",
+                    help="stop it, remove it from startup, delete the addon and its saved settings")
     args = ap.parse_args()
+
+    if args.uninstall:
+        cfg = {}
+        if os.path.isfile(args.config):
+            with open(args.config, encoding="utf-8") as f:
+                cfg = json.load(f)
+        uninstall(cfg)
+        return
 
     if not args.dump and not single_instance():
         message_box("Forever Tracker is already running in the background.")

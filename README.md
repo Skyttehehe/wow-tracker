@@ -127,6 +127,11 @@ friends can't overwrite each other. Your `FT_TOKEN` is the owner key: it can upl
    from then on starts silently with Windows (it logs to `companion.log` next to it).
 3. In game, click the Forever Tracker button on the minimap and paste their code. The UI reloads once to save it.
 
+To remove it, a friend closes WoW and uses Windows Settings → Apps → *Forever Tracker* → Uninstall (or
+`Uninstall Forever Tracker.bat` in the folder): it stops the companion, removes the startup entry, and deletes the
+addon and its saved settings. While WoW is closed the companion only checks the saved file every few seconds; it
+reads the screen only while the game runs.
+
 The exe is needed because addons can't reach the network; it reads the in-game strip and the saved file and
 uploads them. Every friend's uploads count towards the same Upstash command budget.
 
