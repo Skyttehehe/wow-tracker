@@ -162,7 +162,8 @@ function renderProgress(s) {
   $("deaths").textContent = history.events.filter((e) => e.type === "death").length;
 }
 
-// Exact values when the game allows it, else its percentage, else "hidden".
+// Exact values when the game allows it, else its percentage. Returns false when
+// neither is known (the game keeps it secret); callers then hide the bar.
 function setBar(fill, text, cur, max, percent) {
   if (cur != null && max) {
     $(fill).style.width = `${pct(cur, max)}%`;
@@ -174,8 +175,6 @@ function setBar(fill, text, cur, max, percent) {
     $(text).textContent = max ? `${percent}% of ${fmt.format(max)}` : `${percent}%`;
     return true;
   }
-  $(fill).style.width = "0%";
-  $(text).innerHTML = `<span class="hidden-value">hidden</span>${max ? ` / ${fmt.format(max)}` : ""}`;
   return false;
 }
 
@@ -190,20 +189,27 @@ function renderTarget(s) {
   const who = t.player ? `${t.class || "Player"} (player)` : t.name || "Unknown";
   $("target-who").innerHTML = `${s.combat ? "Fighting" : "Targeting"} <span class="who">${esc(who)}</span>`
     + `${level != null ? ` · Lv ${level}` : ""}${t.rank ? `<span class="rank">${RANKS[t.rank]}</span>` : ""}`;
+  let known = true;
   if (t.dead) {
     $("target-fill").style.width = "0%";
     $("target-text").textContent = "Defeated";
-    return;
+  } else {
+    known = setBar("target-fill", "target-text", t.health, t.healthMax, t.pct);
   }
-  setBar("target-fill", "target-text", t.health, t.healthMax, t.pct);
+  // No health yet (secret, and not in the combat log): just the name line.
+  $("target-fill").parentElement.hidden = !known;
+  $("target-text").hidden = !known;
 }
 
 function renderVitals(s) {
+  // Values the game keeps secret (and the combat log hasn't filled in) aren't shown at all.
   const hp = setBar("hp-fill", "hp-text", s.health, s.healthMax, s.healthPct);
+  $("hp-fill").closest(".vital").hidden = !hp;
   const p = s.power || {};
   const [label, color] = POWER[p.type] || [p.type ? p.type[0] + p.type.slice(1).toLowerCase() : "Power", "var(--mana)"];
   $("power-name").textContent = label;
   const pw = setBar("power-fill", "power-text", p.cur, p.max, p.pct);
+  $("power-fill").closest(".vital").hidden = !pw;
   $("power-fill").style.setProperty("--power", color);
 
   const flags = [];
@@ -212,17 +218,6 @@ function renderVitals(s) {
   if (s.combat) flags.push(["combat", "In combat"]);
   if (s.resting) flags.push(["resting", "Resting"]);
   $("flags").innerHTML = flags.map(([c, t]) => `<span class="flag ${c}">${t}</span>`).join("");
-
-  const notes = [];
-  if (s.vitalsAssumed) {
-    notes.push("Out of combat for a while, so health and mana are assumed to have regenerated to full.");
-  } else if (s.vitalsAt) {
-    notes.push(`From the game's combat log at your last combat action (${ago(s.vitalsAt)}).`);
-  } else if (!hp || !pw) {
-    notes.push("WoW Forever keeps current health and power secret from addons; only the maximum is shown.");
-  }
-  if (!state.live) notes.push("Shown as of the last update.");
-  $("vitals-note").textContent = notes.join(" ");
   renderTarget(s);
 }
 
