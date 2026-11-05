@@ -12,9 +12,8 @@ const POWER = {
 const EVENT_ICONS = { level: "★", death: "☠", zone: "⚑", quest: "✔", accept: "!", abandon: "✕", login: "⏻" };
 const FILTER_GROUPS = { quest: ["quest", "accept", "abandon"] };
 const SESSION_GAP = 15 * 60; // seconds; longer gaps count as a break
+const POLL_SECONDS = 3;       // update rate when the backend has no stream (Vercel)
 const DEFAULT_MAP = { width: 1002, height: 668 };
-// Set in config.js: "api" when the backend serves this page, a full URL when it doesn't (Vercel).
-const API = (window.FT_CONFIG?.apiBase ?? "api").replace(/\/+$/, "");
 
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat();
@@ -121,7 +120,7 @@ function renderPresence() {
   pill.className = `pill ${online ? "online" : "offline"}`;
   $("presence-text").textContent = !online ? "Offline" : state.live ? "Live" : "Online";
   let text = "";
-  if (online && state.live) text = "Updating every second";
+  if (online && state.live) text = state.stream === false ? `Updating every ${POLL_SECONDS} s` : "Updating every second";
   else if (state?.updatedAt) text = `Last update ${ago(state.updatedAt)}`;
   if (!online && state?.presenceAt) text += `${text ? " · " : ""}seen ${ago(state.presenceAt)}`;
   $("freshness").textContent = text;
@@ -452,15 +451,21 @@ function renderAll() {
 
 // --- data --------------------------------------------------------------------
 
-async function load() {
+// all=false (polling): refetch the history only when the backend says it changed.
+async function load(all = true) {
   try {
-    const [st, hist] = await Promise.all([
-      fetch(`${API}/state`).then((r) => r.json()),
-      fetch(`${API}/history`).then((r) => r.json()),
-    ]);
-    state = st;
-    history = hist;
-    renderAll();
+    const st = await fetch("api/state").then((r) => r.json());
+    if (all || st.historyAt !== state?.historyAt) {
+      // ?v= makes each history version its own CDN cache entry on Vercel.
+      history = await fetch(`api/history?v=${st.historyAt ?? 0}`).then((r) => r.json());
+      state = st;
+      renderAll();
+    } else {
+      state = st;
+      renderPresence();
+      renderQuests();
+      if (st.snapshot) renderLive();
+    }
   } catch (err) {
     console.error("load failed", err);
   }
@@ -468,7 +473,7 @@ async function load() {
 
 function connect() {
   if (!window.EventSource) return;
-  const es = new EventSource(`${API}/stream`);
+  const es = new EventSource("api/stream");
   es.addEventListener("update", load);
   es.addEventListener("live", (ev) => {
     const quests = state?.quests;
@@ -512,6 +517,14 @@ fetch("maps/index.json")
   .then((r) => (r.ok ? r.json() : {}))
   .catch(() => ({}))
   .then((idx) => { mapIndex = idx; })
-  .finally(() => { load(); connect(); });
-// Presence expires server-side without a push, so re-check now and then.
-setInterval(load, 60_000);
+  .then(() => load())
+  .finally(() => {
+    // On Vercel there is no live stream (functions end after each request): poll instead.
+    if (state?.stream === false) {
+      setInterval(() => load(false), POLL_SECONDS * 1000);
+      return;
+    }
+    connect();
+    // Presence expires server-side without a push, so re-check now and then.
+    setInterval(load, 60_000);
+  });

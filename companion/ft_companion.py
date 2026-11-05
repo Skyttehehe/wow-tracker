@@ -211,6 +211,7 @@ def post(url, token, payload):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST", headers={
         "Content-Type": "application/json",
+        "User-Agent": "forever-tracker-companion",
         "Authorization": f"Bearer {token}",
     })
     with urllib.request.urlopen(req, timeout=10) as resp:
@@ -220,7 +221,7 @@ def post(url, token, payload):
 # --- main loop ---------------------------------------------------------------
 
 class Companion:
-    LIVE_EVERY = 1.0      # seconds between live uploads
+    LIVE_EVERY = 1.0      # seconds between live uploads (config: live_seconds)
     CAPTURE_EVERY = 0.05  # seconds between strip reads
     LIVE_STALE = 3.0      # no valid strip for this long = not live
 
@@ -229,6 +230,7 @@ class Companion:
         self.token = cfg["token"]
         self.poll = cfg.get("poll_seconds", 2)
         self.heartbeat_every = cfg.get("heartbeat_seconds", 30)
+        self.live_every = cfg.get("live_seconds", self.LIVE_EVERY)
         self.path = None
         self.mtime = None
         self.db = None
@@ -278,11 +280,19 @@ class Companion:
             "quests": self.db.get("quests"),
         }
 
+    def ingest_url(self):
+        """backend_url (a site on Vercel) wins over the in-game LAN address."""
+        base = str(self.cfg.get("backend_url") or "").rstrip("/")
+        if base:
+            # The token travels with every upload: never over plain HTTP.
+            return f"{base}/api/ingest" if base.startswith("https://") else None
+        return endpoint_url(self.settings().get("endpoint") or self.cfg.get("endpoint"))
+
     def send(self, payload):
-        endpoint = self.settings().get("endpoint") or self.cfg.get("endpoint")
-        url = endpoint_url(endpoint)
+        url = self.ingest_url()
         if not url:
-            log(f"endpoint {endpoint!r} is not a LAN address; not sending")
+            log("no usable backend: set backend_url (https://...) in the config, "
+                "or a LAN address in game; not sending")
             return True  # don't retry an invalid target
         try:
             post(url, self.token, payload)
@@ -342,9 +352,9 @@ class Companion:
         return self.frame is not None and now - self.frame_at < self.LIVE_STALE
 
     def post_live(self, now):
-        if now - self.last_live_post < self.LIVE_EVERY:
+        if now - self.last_live_post < self.live_every:
             return
-        if not endpoint_url(self.settings().get("endpoint") or self.cfg.get("endpoint")):
+        if not self.ingest_url():
             return  # keep queued events until we know where to send them
         self.last_live_post = now
         flags = self.frame["flags"]

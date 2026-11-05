@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Forever Tracker backend.
 
-- POST /api/ingest   companion uploads (LAN only, bearer token)
+- POST /api/ingest   companion uploads (bearer token; LAN only unless on Vercel)
 - GET  /api/state    latest snapshot + online status
 - GET  /api/history  position trail, XP samples, event log
 - GET  /api/stream   Server-Sent Events; fires "update" after each ingest
 - everything else    static frontend
 
 Standard library only. Configure with environment variables (see README).
+Runs as its own server (SQLite) or as a Vercel function (api/index.py, Redis).
 """
 
+import hmac
 import ipaddress
 import json
 import mimetypes
@@ -17,6 +19,8 @@ import os
 import sqlite3
 import threading
 import time
+import urllib.request
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -29,9 +33,10 @@ PORT = int(os.environ.get("FT_PORT", "8787"))
 STATIC = os.path.realpath(os.environ.get("FT_STATIC", os.path.join(HERE, "..", "frontend")))
 INGEST_NETS = [ipaddress.ip_network(n.strip()) for n in os.environ.get(
     "FT_INGEST_NETS", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8").split(",")]
-# Sites on other hosts allowed to read the public API, e.g. "https://wow.osrs.dk" when the
-# website runs on Vercel. Comma-separated; "*" allows any. Uploads never get CORS headers.
-CORS_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("FT_CORS_ORIGINS", "").split(",") if o.strip()}
+# On Vercel (or with FT_PUBLIC_INGEST=1) uploads come over the internet and the token is
+# the only check. Vercel functions end after each request, so there is no live stream.
+SERVERLESS = bool(os.environ.get("VERCEL"))
+PUBLIC_INGEST = SERVERLESS or os.environ.get("FT_PUBLIC_INGEST") == "1"
 PRESENCE_TIMEOUT = 120   # seconds without a heartbeat before showing offline
 MAX_BODY = 2 * 1024 * 1024
 
@@ -79,36 +84,45 @@ def clean_quests(quests):
 
 
 # --- storage -----------------------------------------------------------------
+#
+# Store holds the tracking logic; subclasses only store and fetch rows.
+# SqliteStore runs on your own server. RedisStore runs on Vercel, where no disk
+# outlives a request, against Upstash Redis over its REST API.
 
 class Store:
-    def __init__(self, path):
+    def __init__(self):
         self.lock = threading.Lock()
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS events (
-                t INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL,
-                PRIMARY KEY (t, type, data));
-            CREATE TABLE IF NOT EXISTS positions (
-                t INTEGER PRIMARY KEY, mapID INTEGER, map TEXT, x REAL, y REAL);
-            CREATE TABLE IF NOT EXISTS xp (
-                t INTEGER PRIMARY KEY, level INTEGER, xp INTEGER, xpMax INTEGER);
-        """)
         self.live_version = 0
         self.history_version = 0
         self.changed = threading.Condition()
-        self.last_position = None
-        self.last_xp = None
-        self.combat_ended_at = None
+
+    # Storage primitives. get/put/insert_* are only called inside transaction().
+    def transaction(self):
+        raise NotImplementedError
 
     def get(self, key):
-        row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
-        return json.loads(row[0]) if row else None
+        raise NotImplementedError
 
     def put(self, key, value):
-        self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, json.dumps(value)))
+        raise NotImplementedError
 
+    def insert_events(self, rows):
+        """rows: (t, type, data_json). Returns how many were new."""
+        raise NotImplementedError
+
+    def insert_positions(self, rows):
+        """rows: (t, mapID, map, x, y)."""
+        raise NotImplementedError
+
+    def insert_xp(self, rows):
+        """rows: (t, level, xp, xpMax)."""
+        raise NotImplementedError
+
+    def read_history(self, limit_positions, limit_events):
+        """Returns (positions oldest first, all xp oldest first, event data_json newest first)."""
+        raise NotImplementedError
+
+    # Logic.
     def notify(self, history=False):
         with self.changed:
             self.live_version += 1
@@ -117,16 +131,14 @@ class Store:
             self.changed.notify_all()
 
     def add_events(self, events):
-        added = 0
+        rows = []
         for e in events or []:
             if isinstance(e, dict) and isinstance(e.get("t"), int) and e.get("type"):
                 data = {k: v for k, v in e.items() if k in EVENT_FIELDS}
-                cur = self.conn.execute("INSERT OR IGNORE INTO events VALUES (?, ?, ?)",
-                                        (e["t"], str(e["type"]), json.dumps(data, sort_keys=True)))
-                added += cur.rowcount
-        return added
+                rows.append((e["t"], str(e["type"]), json.dumps(data, sort_keys=True)))
+        return self.insert_events(rows) if rows else 0
 
-    def ingest_live(self, payload, now):
+    def ingest_live(self, payload, now, sampler):
         frame = payload.get("frame") or {}
         flags = frame.get("flags") or {}
         snap = self.get("snapshot") or {}
@@ -154,7 +166,7 @@ class Store:
                 snap["vitalsAt"] = vitals["t"]
         for k in ("dead", "ghost", "combat", "resting"):
             snap[k] = bool(flags.get(k))
-        self.assume_full(snap, now, frame)
+        self.assume_full(snap, now, frame, sampler)
         snap["status"] = "offline" if flags.get("leaving") else "online"
         snap["t"] = frame.get("t") or now
 
@@ -166,19 +178,19 @@ class Store:
             self.put("snapshot", snap)
             self.put("updatedAt", now)
             self.put("liveAt", now)
-            history |= self.sample_live(snap, now)
+            history |= self.sample_live(snap, now, sampler)
         self.put("presence", {"online": snap["status"] == "online", "t": now})
         return history
 
-    def assume_full(self, snap, now, frame):
+    def assume_full(self, snap, now, frame, sampler):
         """After FULL_AFTER seconds out of combat with no newer combat-log
         reading, health and power have regenerated: show them as full (rage
         as empty)."""
         snap["vitalsAssumed"] = False
-        if snap["combat"] or self.combat_ended_at is None:
-            self.combat_ended_at = None if snap["combat"] else now
+        if snap["combat"] or sampler.get("combatEndedAt") is None:
+            sampler["combatEndedAt"] = None if snap["combat"] else now
             return
-        if snap["dead"] or snap["ghost"] or now - self.combat_ended_at < FULL_AFTER:
+        if snap["dead"] or snap["ghost"] or now - sampler["combatEndedAt"] < FULL_AFTER:
             return
         if snap["vitalsAt"] and now - snap["vitalsAt"] < FULL_AFTER:
             return
@@ -192,25 +204,23 @@ class Store:
         if snap["vitalsAssumed"]:
             snap["vitalsAt"] = None
 
-    def sample_live(self, s, now):
+    def sample_live(self, s, now, sampler):
         """Adds trail and XP points from live data at a modest rate."""
         added = False
         if s.get("x") is not None and s.get("mapID"):
-            last = self.last_position
+            last = sampler.get("position")
             moved = (not last or last[1] != s["mapID"]
                      or abs(last[2] - s["x"]) > 0.002 or abs(last[3] - s["y"]) > 0.002)
             if moved and (not last or now - last[0] >= POSITION_EVERY):
-                self.conn.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)",
-                                  (now, s["mapID"], s.get("map"), s["x"], s["y"]))
-                self.last_position = (now, s["mapID"], s["x"], s["y"])
+                self.insert_positions([(now, s["mapID"], s.get("map"), s["x"], s["y"])])
+                sampler["position"] = [now, s["mapID"], s["x"], s["y"]]
                 added = True
         if s.get("xp") is not None and s.get("xpMax"):
-            last = self.last_xp
-            key = (s["level"], s["xp"])
+            last = sampler.get("xp")
+            key = [s["level"], s["xp"]]
             if not last or (last[1] != key and (key[0] != last[1][0] or now - last[0] >= XP_EVERY)):
-                self.conn.execute("INSERT OR IGNORE INTO xp VALUES (?, ?, ?, ?)",
-                                  (now, s["level"], s["xp"], s["xpMax"]))
-                self.last_xp = (now, key)
+                self.insert_xp([(now, s["level"], s["xp"], s["xpMax"])])
+                sampler["xp"] = [now, key]
                 added = True
         return added
 
@@ -218,11 +228,14 @@ class Store:
         kind = payload.get("kind")
         now = int(time.time())
         history = False
-        with self.lock, self.conn:
+        with self.transaction():
+            # Sampling state lives in storage: on Vercel each request may be a fresh process.
+            sampler = self.get("sampler") or {}
             if kind == "presence":
                 self.put("presence", {"online": bool(payload.get("online")), "t": now})
             elif kind == "live":
-                history = self.ingest_live(payload, now)
+                history = self.ingest_live(payload, now, sampler)
+                self.put("sampler", sampler)
             elif kind == "snapshot":
                 snap = {k: v for k, v in (payload.get("snapshot") or {}).items()
                         if k in SNAPSHOT_FIELDS}
@@ -243,25 +256,28 @@ class Store:
                         self.put("quests", {"t": now, "list": clean_quests(payload["quests"])})
                 history = True
                 self.add_events(payload.get("events"))
-                for p in payload.get("positions") or []:
-                    if isinstance(p, dict) and isinstance(p.get("t"), int) and "x" in p:
-                        self.conn.execute(
-                            "INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)",
-                            (p["t"], p.get("mapID"), p.get("map"), p.get("x"), p.get("y")))
-                for s in payload.get("xp") or []:
-                    if isinstance(s, dict) and isinstance(s.get("t"), int):
-                        self.conn.execute("INSERT OR IGNORE INTO xp VALUES (?, ?, ?, ?)",
-                                          (s["t"], s.get("level"), s.get("xp"), s.get("xpMax")))
+                self.insert_positions([
+                    (p["t"], p.get("mapID"), p.get("map"), p.get("x"), p.get("y"))
+                    for p in payload.get("positions") or []
+                    if isinstance(p, dict) and isinstance(p.get("t"), int) and "x" in p])
+                self.insert_xp([
+                    (s["t"], s.get("level"), s.get("xp"), s.get("xpMax"))
+                    for s in payload.get("xp") or []
+                    if isinstance(s, dict) and isinstance(s.get("t"), int)])
             else:
                 raise ValueError(f"unknown kind {kind!r}")
+            if history:
+                # Tells polling pages when to refetch /api/history.
+                self.put("historyAt", now)
         self.notify(history)
 
     def state(self, quests=True):
-        with self.lock:
+        with self.transaction():
             presence = self.get("presence") or {"online": False, "t": 0}
             snapshot = self.get("snapshot")
             updated = self.get("updatedAt")
             live_at = self.get("liveAt") or 0
+            history_at = self.get("historyAt")
             quest_state = self.get("quests") if quests else None
         now = int(time.time())
         online = presence["online"] and now - presence["t"] < PRESENCE_TIMEOUT
@@ -271,6 +287,9 @@ class Store:
             "live": online and now - live_at < LIVE_STALE,
             "presenceAt": presence["t"],
             "updatedAt": updated,
+            "historyAt": history_at,
+            # Without a stream (Vercel) the page polls instead.
+            "stream": not SERVERLESS,
             "snapshot": snapshot,
         }
         if quests:
@@ -278,6 +297,53 @@ class Store:
         return state
 
     def history(self, limit_positions=500, limit_events=150):
+        positions, xp, events = self.read_history(limit_positions, limit_events)
+        return {
+            "positions": [dict(zip(("t", "mapID", "map", "x", "y"), r)) for r in positions],
+            "xp": [dict(zip(("t", "level", "xp", "xpMax"), r)) for r in xp],
+            "events": [json.loads(e) for e in events],
+        }
+
+
+class SqliteStore(Store):
+    def __init__(self, path):
+        super().__init__()
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS events (
+                t INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY (t, type, data));
+            CREATE TABLE IF NOT EXISTS positions (
+                t INTEGER PRIMARY KEY, mapID INTEGER, map TEXT, x REAL, y REAL);
+            CREATE TABLE IF NOT EXISTS xp (
+                t INTEGER PRIMARY KEY, level INTEGER, xp INTEGER, xpMax INTEGER);
+        """)
+
+    @contextmanager
+    def transaction(self):
+        with self.lock, self.conn:
+            yield
+
+    def get(self, key):
+        row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def put(self, key, value):
+        self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, json.dumps(value)))
+
+    def insert_events(self, rows):
+        return sum(self.conn.execute("INSERT OR IGNORE INTO events VALUES (?, ?, ?)", r).rowcount
+                   for r in rows)
+
+    def insert_positions(self, rows):
+        self.conn.executemany("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)", rows)
+
+    def insert_xp(self, rows):
+        self.conn.executemany("INSERT OR IGNORE INTO xp VALUES (?, ?, ?, ?)", rows)
+
+    def read_history(self, limit_positions, limit_events):
         with self.lock:
             positions = self.conn.execute(
                 "SELECT t, mapID, map, x, y FROM positions ORDER BY t DESC LIMIT ?",
@@ -285,11 +351,95 @@ class Store:
             xp = self.conn.execute("SELECT t, level, xp, xpMax FROM xp ORDER BY t").fetchall()
             events = self.conn.execute(
                 "SELECT data FROM events ORDER BY t DESC LIMIT ?", (limit_events,)).fetchall()
-        return {
-            "positions": [dict(zip(("t", "mapID", "map", "x", "y"), r)) for r in reversed(positions)],
-            "xp": [dict(zip(("t", "level", "xp", "xpMax"), r)) for r in xp],
-            "events": [json.loads(r[0]) for r in events],
-        }
+        return list(reversed(positions)), xp, [r[0] for r in events]
+
+
+class RedisStore(Store):
+    """Upstash Redis through its REST API: one read and one write round trip per upload.
+
+    Keys: ft:kv (hash of JSON values), ft:events / ft:positions / ft:xp (sorted
+    sets scored by time; members are JSON, so identical rows are stored once)."""
+
+    KV, EVENTS, POSITIONS, XP = "ft:kv", "ft:events", "ft:positions", "ft:xp"
+    KEEP = {EVENTS: 2000, POSITIONS: 20000, XP: 20000}  # older rows beyond this are dropped
+
+    def __init__(self, url, token):
+        super().__init__()
+        self.url, self.token = url.rstrip("/"), token
+        self.kv = None
+        self.dirty = {}
+        self.writes = []
+
+    def pipeline(self, commands):
+        req = urllib.request.Request(
+            self.url + "/pipeline", data=json.dumps(commands).encode(), method="POST",
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            replies = json.loads(resp.read())
+        for r in replies:
+            if "error" in r:
+                raise RuntimeError(f"redis: {r['error']}")
+        return [r.get("result") for r in replies]
+
+    @contextmanager
+    def transaction(self):
+        with self.lock:
+            flat = self.pipeline([["HGETALL", self.KV]])[0] or []
+            self.kv = dict(zip(flat[::2], flat[1::2]))
+            self.dirty, self.writes = {}, []
+            try:
+                yield
+                commands = list(self.writes)
+                if self.dirty:
+                    commands.append(["HSET", self.KV, *[x for kv in self.dirty.items() for x in kv]])
+                if commands:
+                    self.pipeline(commands)
+            finally:
+                self.kv, self.dirty, self.writes = None, {}, []
+
+    def get(self, key):
+        value = self.kv.get(key)
+        return json.loads(value) if value is not None else None
+
+    def put(self, key, value):
+        self.kv[key] = self.dirty[key] = json.dumps(value)
+
+    def add_rows(self, key, rows, member):
+        if not rows:
+            return 0
+        self.writes.append(["ZADD", key, "NX", *[x for r in rows for x in (r[0], member(r))]])
+        self.writes.append(["ZREMRANGEBYRANK", key, 0, -self.KEEP[key] - 1])
+        return len(rows)  # an upper bound; Redis ignores rows it already has
+
+    def insert_events(self, rows):
+        return self.add_rows(self.EVENTS, rows, lambda r: r[2])
+
+    def insert_positions(self, rows):
+        return self.add_rows(self.POSITIONS, rows, lambda r: json.dumps(list(r)))
+
+    def insert_xp(self, rows):
+        return self.add_rows(self.XP, rows, lambda r: json.dumps(list(r)))
+
+    def read_history(self, limit_positions, limit_events):
+        positions, xp, events = self.pipeline([
+            ["ZRANGE", self.POSITIONS, -limit_positions, -1],
+            ["ZRANGE", self.XP, 0, -1],
+            ["ZREVRANGE", self.EVENTS, 0, limit_events - 1],
+        ])
+        return ([json.loads(p) for p in positions or []], [json.loads(x) for x in xp or []],
+                events or [])
+
+
+def make_store():
+    """Redis when a Redis REST URL is configured (Vercel), otherwise SQLite at FT_DB."""
+    url = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
+    token = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+    if url and token:
+        return RedisStore(url, token)
+    if SERVERLESS:
+        raise RuntimeError("no database: connect an Upstash Redis store to this Vercel project "
+                           "(Storage tab), then redeploy")
+    return SqliteStore(DB_PATH)
 
 
 STORE = None
@@ -305,22 +455,17 @@ class Handler(BaseHTTPRequestHandler):
         if os.environ.get("FT_ACCESS_LOG"):
             super().log_message(fmt, *args)
 
-    def end_headers(self):
-        headers = getattr(self, "headers", None)
-        origin = headers.get("Origin", "").rstrip("/") if headers else ""
-        if (origin and getattr(self, "command", None) in ("GET", "HEAD")
-                and getattr(self, "path", "").startswith("/api/")
-                and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS)):
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
-        super().end_headers()
-
-    def send_json(self, obj, status=HTTPStatus.OK):
+    def send_json(self, obj, status=HTTPStatus.OK, cdn_seconds=0):
         body = json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # On Vercel every viewer polls. A short CDN cache keeps that to about one
+        # function call (and one database read) per interval, however many watch.
+        if SERVERLESS and cdn_seconds and status == HTTPStatus.OK:
+            self.send_header("Cache-Control", f"public, s-maxage={cdn_seconds}")
+        else:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -328,6 +473,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": msg}, status)
 
     def ingest_allowed(self):
+        if PUBLIC_INGEST:
+            return True
         # Uploads come straight from the companion. Anything relayed by a
         # reverse proxy (i.e. from the internet) is refused.
         if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
@@ -345,7 +492,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.error(HTTPStatus.NOT_FOUND, "not found")
         if not self.ingest_allowed():
             return self.error(HTTPStatus.FORBIDDEN, "ingest is LAN-only")
-        if not TOKEN or self.headers.get("Authorization") != f"Bearer {TOKEN}":
+        if not TOKEN or not hmac.compare_digest(
+                self.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()):
             return self.error(HTTPStatus.UNAUTHORIZED, "bad token")
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_BODY:
@@ -360,10 +508,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/api/state":
-            return self.send_json(STORE.state())
+            return self.send_json(STORE.state(), cdn_seconds=2)
         if url.path == "/api/history":
-            return self.send_json(STORE.history())
-        if url.path == "/api/stream":
+            # The page asks for ?v=<historyAt>, so a new version always misses the cache.
+            return self.send_json(STORE.history(), cdn_seconds=60)
+        if url.path == "/api/stream" and not SERVERLESS:
             return self.stream()
         if url.path.startswith("/api/"):
             return self.error(HTTPStatus.NOT_FOUND, "not found")
@@ -423,7 +572,7 @@ def main():
     global STORE
     if not TOKEN:
         raise SystemExit("set FT_TOKEN (shared secret for the companion)")
-    STORE = Store(DB_PATH)
+    STORE = make_store()
     print(f"Forever Tracker backend on http://{HOST}:{PORT} (static: {STATIC}, db: {DB_PATH})",
           flush=True)
     Server((HOST, PORT), Handler).serve_forever()

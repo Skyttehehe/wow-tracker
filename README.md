@@ -66,7 +66,42 @@ list is a capped ring buffer, so the file stays small.
 Copy (or symlink) `addon/ForeverTracker` into
 `World of Warcraft/_forever_/Interface/AddOns/`. Interface version `16001` (client 1.60.1).
 
-### 2. Backend (Proxmox CT)
+### 2. Backend
+
+Pick one: on Vercel (nothing to run at home) or on your own server.
+
+#### On Vercel (wow.osrs.dk)
+
+The website and the backend both run on Vercel: `frontend/` as static files, `api/index.py` as a Python function
+running the same backend code. Vercel functions have no disk that lasts, so data goes to an Upstash Redis database.
+
+```
+companion ──HTTPS + token──▶ wow.osrs.dk/api/ingest ─┐
+                                                     ├─ Vercel function ── Upstash Redis
+friends ──▶ wow.osrs.dk (page polls /api/state) ─────┘
+```
+
+1. **Project.** On vercel.com: *Add New → Project*, import this repository, leave every setting as it is
+   (`vercel.json` covers it).
+2. **Database.** In the project: *Storage → Create Database → Upstash for Redis* (Marketplace, free plan), and
+   connect it to the project. That adds `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+3. **Token.** *Settings → Environment Variables*: add `FT_TOKEN` with a long random value
+   (`python3 -c "import secrets; print(secrets.token_hex(32))"`). Optionally `FT_FULL_AFTER` (default 30).
+4. **Deploy.** *Deployments → Redeploy* so the variables apply. `https://<project>.vercel.app/api/state` should
+   now return JSON; an error there names what's missing.
+5. **Domain.** *Settings → Domains → Add* `wow.osrs.dk`. At the DNS host for `osrs.dk` add the record Vercel
+   shows, normally `CNAME wow → cname.vercel-dns.com`. Vercel issues the HTTPS certificate itself.
+
+Differences from running it yourself:
+
+- Uploads come over the internet, so the token is the only thing guarding them. Keep it secret.
+- There's no live stream (Vercel functions end after each request). The page polls every 3 seconds instead,
+  through a 2-second CDN cache, so the number of viewers doesn't change how often the function or database runs.
+- Cost: every upload is a function call plus about 2 to 4 Redis commands. With `live_seconds: 2` in the
+  companion, an hour of play is roughly 1,800 uploads. Compare that with your Upstash plan's monthly command limit;
+  raise `live_seconds` if you get close.
+
+#### On your own server (Proxmox CT)
 
 A Debian 12 CT with `python3` is all it needs. There are no pip dependencies.
 
@@ -86,42 +121,23 @@ even if the Caddy rule is missing.
 ### 3. Companion (gaming PC)
 
 ```bash
-cp companion/config.example.json companion/config.json   # set wow_path and the same token
+cp companion/config.example.json companion/config.json   # set wow_path, backend_url and the same token
 python3 companion/ft_companion.py --dump                  # sanity check: prints what would be sent
 python3 companion/ft_companion.py                         # run it
 ```
 
+`backend_url` is the site on Vercel (`https://wow.osrs.dk`); it must be HTTPS. Remove it to send to the LAN
+address set in game instead (self-hosted backend). `live_seconds` is the gap between live uploads (default 1).
+
 On Linux, `deploy/ft-companion.service` runs it as a systemd user service. On Windows, run it with `pythonw`
 from a scheduled task at logon.
-
-### Website on Vercel (wow.osrs.dk)
-
-Instead of serving the page from the backend, the website can run on Vercel while the backend stays at home.
-Vercel only hosts the static page; the backend (SQLite, live stream, LAN-only uploads) can't run there.
-
-```
-friends ──▶ wow.osrs.dk (Vercel: frontend/) ──page calls──▶ wow-api.osrs.dk (Caddy, GET only) ──▶ backend
-```
-
-1. **API host.** Add `deploy/Caddyfile.api-for-vercel` to your Caddyfile (set the backend's LAN IP), and point
-   `wow-api.osrs.dk` (A record) at your home IP with ports 80/443 forwarded to Caddy. In the backend's env file
-   set `FT_CORS_ORIGINS=https://wow.osrs.dk` and restart it. Check: `https://wow-api.osrs.dk/api/state` returns
-   JSON and `https://wow-api.osrs.dk/api/ingest` returns 404.
-2. **Vercel project.** *Add New → Project*, import this repository, keep *Root Directory* at the repo root and
-   deploy. `vercel.json` does the rest: it builds the zone maps with `tools/fetch_maps.py` (they're not in git)
-   and publishes `frontend/`.
-3. **Domain.** In the project, *Settings → Domains → Add* `wow.osrs.dk`. At the DNS host for `osrs.dk` add the
-   record Vercel shows, normally `CNAME wow → cname.vercel-dns.com`. Vercel issues the certificate itself.
-
-`frontend/config.js` decides where the page looks for the API: on `wow.osrs.dk` and `*.vercel.app` it calls
-`https://wow-api.osrs.dk/api`, anywhere else it uses the same origin, so self-hosting still works unchanged.
-Preview deployments (`*.vercel.app`) only get data if you add their origin to `FT_CORS_ORIGINS` (or use `*`).
 
 ### Zone maps
 
 `python3 tools/fetch_maps.py` builds `frontend/maps/<uiMapID>.jpg` (plus `index.json`) from the game's own world map
 tiles for the exact client build, via wago.tools. Rerun it with `--build <version> --force` after a patch that
-changes maps. Map coordinates from the game line up 1:1 with these images.
+changes maps. Map coordinates from the game line up 1:1 with these images. The images are committed, so a
+Vercel deploy doesn't have to rebuild them (that takes about 6 minutes).
 
 ## Development
 

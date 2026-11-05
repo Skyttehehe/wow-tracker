@@ -1,6 +1,4 @@
 companion/config.json
 *.sqlite3*
 __pycache__/
-frontend/maps/*.jpg
-.pydeps/
 .vercel
