@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forever Tracker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23d8b25a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <div class="crest" id="crest" aria-hidden="true"></div>
+    <div class="who">
+      <p class="eyebrow" id="realm">World of Warcraft: Forever</p>
+      <h1 id="name">Waiting for first sync…</h1>
+      <p class="sub" id="subtitle">The tracker hasn't received any data yet.</p>
+    </div>
+    <div class="presence">
+      <span class="pill offline" id="presence"><span class="dot"></span><span id="presence-text">Offline</span></span>
+      <span class="muted small" id="freshness"></span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card progress">
+      <div class="card-head"><h2>Progress</h2><span class="muted small" id="level-cap"></span></div>
+      <div class="level-row">
+        <div class="level-badge"><span class="small muted">Level</span><strong id="level">–</strong></div>
+        <div class="xp-block">
+          <div class="bar xp" id="xp-bar" title="">
+            <div class="fill" id="xp-fill"></div>
+            <div class="rested" id="rested-fill"></div>
+          </div>
+          <div class="bar-legend">
+            <span id="xp-text">–</span>
+            <span id="rested-text" class="rested-label"></span>
+          </div>
+        </div>
+      </div>
+      <div class="journey" id="journey" aria-label="Levels reached"></div>
+      <dl class="stats">
+        <div><dt>XP / hour</dt><dd id="xph">–</dd></div>
+        <div><dt>Next level in</dt><dd id="ttl">–</dd></div>
+        <div><dt>Gold</dt><dd id="money">–</dd></div>
+        <div><dt>Deaths</dt><dd id="deaths">–</dd></div>
+      </dl>
+    </section>
+
+    <section class="card vitals">
+      <div class="card-head"><h2>Vitals</h2><span class="flags" id="flags"></span></div>
+      <div class="vital">
+        <div class="vital-label"><span>Health</span><span id="hp-text">–</span></div>
+        <div class="bar hp"><div class="fill" id="hp-fill"></div></div>
+      </div>
+      <div class="vital">
+        <div class="vital-label"><span id="power-name">Mana</span><span id="power-text">–</span></div>
+        <div class="bar power"><div class="fill" id="power-fill"></div></div>
+      </div>
+      <p class="muted small vitals-note" id="vitals-note"></p>
+    </section>
+
+    <section class="card location">
+      <div class="card-head">
+        <div>
+          <h2 id="zone">Unknown zone</h2>
+          <p class="muted small" id="subzone"></p>
+        </div>
+        <span class="coords" id="coords">–</span>
+      </div>
+      <div class="map" id="map">
+        <svg id="map-svg" viewBox="0 0 1002 668" preserveAspectRatio="none" role="img" aria-label="Zone map with position">
+          <g id="map-trail"></g>
+          <g id="map-me" class="me-group" hidden>
+            <circle class="me-ring" r="14"></circle>
+            <circle class="me" r="9"></circle>
+          </g>
+        </svg>
+        <div class="map-tip" id="map-tip" hidden></div>
+      </div>
+      <p class="muted small" id="trail-note"></p>
+    </section>
+
+    <section class="card quests">
+      <div class="card-head">
+        <h2>Quest log</h2>
+        <span class="muted small" id="quest-count"></span>
+      </div>
+      <div class="quest-list" id="quest-list"></div>
+    </section>
+
+    <section class="card timeline">
+      <div class="card-head"><h2>Levelling curve</h2><span class="muted small">active play time</span></div>
+      <div class="chart" id="chart">
+        <svg id="chart-svg" role="img" aria-label="Level over time"></svg>
+        <div class="chart-tip" id="chart-tip" hidden></div>
+      </div>
+    </section>
+
+    <section class="card journal">
+      <div class="card-head">
+        <h2>Journal</h2>
+        <div class="chips" id="chips" role="group" aria-label="Filter journal">
+          <button class="chip on" data-filter="all">All</button>
+          <button class="chip" data-filter="level">Levels</button>
+          <button class="chip" data-filter="quest">Quests</button>
+          <button class="chip" data-filter="zone">Zones</button>
+          <button class="chip" data-filter="death">Deaths</button>
+        </div>
+      </div>
+      <ol class="events" id="events"></ol>
+    </section>
+  </main>
+
+  <footer class="foot muted small">
+    Live data from an in-game addon. World map art © Blizzard Entertainment.
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

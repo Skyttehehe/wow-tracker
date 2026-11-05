@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: Forever Tracker
+## Notes: Shares your character's progress with friends through the Forever Tracker companion app.
+## Author: Patrick
+## Version: 0.2.0
+## SavedVariables: ForeverTrackerDB
+
+Core.lua
+Quests.lua
+Strip.lua
+Options.lua

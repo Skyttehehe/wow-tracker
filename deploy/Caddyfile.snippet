@@ -1,0 +1,11 @@
+# Add to your Caddyfile. Replace the hostname and the backend's LAN IP.
+wow.example.com {
+	# Uploads are LAN-only; never expose them through the proxy.
+	@ingest path /api/ingest
+	respond @ingest 404
+
+	reverse_proxy 192.168.1.221:8787 {
+		# Stream /api/stream (Server-Sent Events) without buffering.
+		flush_interval -1
+	}
+}

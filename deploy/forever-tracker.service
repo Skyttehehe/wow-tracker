@@ -1,0 +1,18 @@
+[Unit]
+Description=Forever Tracker backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=forevertracker
+EnvironmentFile=/etc/forever-tracker.env
+ExecStart=/usr/bin/python3 /opt/forever-tracker/backend/server.py
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/forever-tracker
+
+[Install]
+WantedBy=multi-user.target

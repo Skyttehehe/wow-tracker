@@ -1,0 +1,6 @@
+{
+  "wow_path": "/path/to/World of Warcraft",
+  "token": "paste the same INGEST_TOKEN the backend uses",
+  "poll_seconds": 2,
+  "heartbeat_seconds": 30
+}

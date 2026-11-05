@@ -1,0 +1,8 @@
+<Bindings>
+	<Binding name="FOREVERTRACKER_SYNC" header="FOREVERTRACKER">
+		ForeverTracker_Sync()
+	</Binding>
+	<Binding name="FOREVERTRACKER_OPTIONS">
+		ForeverTracker_ToggleOptions()
+	</Binding>
+</Bindings>

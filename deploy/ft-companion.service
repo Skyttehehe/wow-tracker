@@ -1,0 +1,13 @@
+# systemd user unit for the companion on your gaming PC.
+# Install: cp deploy/ft-companion.service ~/.config/systemd/user/
+#          systemctl --user enable --now ft-companion
+[Unit]
+Description=Forever Tracker companion (SavedVariables uploader)
+
+[Service]
+ExecStart=/usr/bin/python3 %h/Projects/wow-tracker/companion/ft_companion.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
