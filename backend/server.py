@@ -116,7 +116,7 @@ def clean_quests(quests):
     return out
 
 
-SUMMARY_FIELDS = ("name", "surname", "realm", "faction", "race", "class", "classToken", "level",
+SUMMARY_FIELDS = ("name", "surname", "realm", "faction", "race", "sex", "class", "classToken", "level",
                   "maxLevel", "zone")
 CHARACTER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 

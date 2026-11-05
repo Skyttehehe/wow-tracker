@@ -111,7 +111,9 @@ function renderHero(s) {
   document.documentElement.style.setProperty("--class", color);
   const fullName = [s.name, s.surname].filter(Boolean).join(" ");
   document.title = `${fullName} · Forever Tracker`;
-  $("crest").textContent = (s.class || "?").charAt(0);
+  const portrait = racePortrait(s);
+  if (changed("crest", [portrait, s.class])) $("crest").innerHTML = `${portrait ? `<img src="${portrait}" alt="" onerror="this.remove()">` : ""}`
+    + `<span>${esc((s.class || "?").charAt(0))}</span>`;
   $("name").textContent = fullName;
   $("realm").textContent = [s.realm, s.faction].filter(Boolean).join(" · ") || "World of Warcraft: Forever";
   $("subtitle").textContent = [`Level ${s.level ?? "?"} ${s.race ?? ""} ${s.class ?? ""}`, s.guild && `<${s.guild}>`]
@@ -410,39 +412,106 @@ function renderQuests() {
   list.innerHTML = html;
 }
 
-// Inventory slot ids in character-pane order (4 = shirt, 19 = tabard).
-const GEAR_SLOTS = [
-  [1, "Head"], [2, "Neck"], [3, "Shoulder"], [15, "Back"], [5, "Chest"], [4, "Shirt"], [19, "Tabard"],
-  [9, "Wrist"], [10, "Hands"], [6, "Waist"], [7, "Legs"], [8, "Feet"], [11, "Finger"], [12, "Finger"],
-  [13, "Trinket"], [14, "Trinket"], [16, "Main hand"], [17, "Off hand"], [18, "Ranged"],
-];
+// --- equipment (laid out like the in-game character pane) -----------------------
+
+// Inventory slot ids per column of the character pane (4 = shirt, 19 = tabard).
+const PANE = {
+  left: [[1, "Head"], [2, "Neck"], [3, "Shoulder"], [15, "Back"], [5, "Chest"], [4, "Shirt"], [19, "Tabard"], [9, "Wrist"]],
+  right: [[10, "Hands"], [6, "Waist"], [7, "Legs"], [8, "Feet"], [11, "Finger"], [12, "Finger"], [13, "Trinket"], [14, "Trinket"]],
+  bottom: [[16, "Main hand"], [17, "Off hand"], [18, "Ranged"]],
+};
 const COSMETIC_SLOTS = new Set([4, 19]);
+const ICON_URL = (name) => `https://wow.zamimg.com/images/wow/icons/large/${name}.jpg`;
+const RACE_TOKENS = { "night elf": "nightelf", undead: "scourge", "blood elf": "bloodelf" };
+
+// Item id -> icon name, from Wowhead's public item data (Forever items match
+// Classic ids). Remembered in the browser so each item is looked up once.
+let icons = {};
+try { icons = JSON.parse(localStorage.getItem("ft-icons") || "{}"); } catch { /* private mode */ }
+const iconLookups = new Map();
+
+function itemIcon(id) {
+  if (!id) return Promise.resolve(null);
+  if (id in icons) return Promise.resolve(icons[id]);
+  if (!iconLookups.has(id)) {
+    iconLookups.set(id, fetch(`https://nether.wowhead.com/classic/tooltip/item/${id}`)
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d) => {
+        const name = /^[a-z0-9_]+$/i.test(d.icon || "") ? d.icon.toLowerCase() : null;
+        icons[id] = name;
+        try { localStorage.setItem("ft-icons", JSON.stringify(icons)); } catch { /* full or blocked */ }
+        return name;
+      })
+      .catch(() => null));
+  }
+  return iconLookups.get(id);
+}
+
+function racePortrait(s) {
+  const race = (s.race || "").toLowerCase();
+  const token = RACE_TOKENS[race] || race.replace(/[^a-z]/g, "");
+  return token ? ICON_URL(`race_${token}_${s.sex === 3 ? "female" : "male"}`) : null;
+}
+
+function slotHtml([slot, label], it) {
+  if (!it) return `<span class="slot empty" title="${label}"><span>${label}</span></span>`;
+  const q = Number.isInteger(it.quality) ? Math.min(Math.max(it.quality, 0), 7) : 1;
+  const title = `${it.name || `Item ${it.id ?? ""}`}${it.ilvl ? ` · item level ${it.ilvl}` : ""}`;
+  const icon = it.id in icons && icons[it.id] ? `<img src="${ICON_URL(icons[it.id])}" alt="" loading="lazy">` : "";
+  return `<a class="slot q${q}" data-item="${it.id ?? ""}" title="${esc(title)}"
+      ${it.id ? `href="https://www.wowhead.com/classic/item=${it.id}" target="_blank" rel="noopener"` : ""}>
+    ${icon || `<span class="letter">${esc((it.name || "?").charAt(0))}</span>`}
+  </a>`;
+}
+
+// Only redraw what changed: a redraw under the mouse would close the item tooltip.
+const drawn = {};
+function changed(key, value) {
+  const v = JSON.stringify(value);
+  if (drawn[key] === v) return false;
+  drawn[key] = v;
+  return true;
+}
 
 function renderGear() {
-  const list = $("gear-list");
-  const items = state?.gear?.items;
-  if (!items) {
-    $("gear-ilvl").textContent = "";
-    list.innerHTML = `<p class="empty">No equipment received yet.</p>`;
-    return;
-  }
+  const s = state?.snapshot || {};
+  const items = state?.gear?.items || [];
   const bySlot = new Map(items.map((it) => [it.slot, it]));
+  if (changed("slots", items)) {
+    for (const [col, slots] of Object.entries(PANE)) {
+      $(`slots-${col}`).innerHTML = slots.map((def) => slotHtml(def, bySlot.get(def[0]))).join("");
+    }
+  }
+  // Fill in icons as their lookups come back.
+  for (const it of items) {
+    if (it.id && !(it.id in icons)) {
+      itemIcon(it.id).then((name) => {
+        const el = name && document.querySelector(`.slot[data-item="${it.id}"]`);
+        if (el && !el.querySelector("img")) el.innerHTML = `<img src="${ICON_URL(name)}" alt="" loading="lazy">`;
+      });
+    }
+  }
+
+  const portrait = racePortrait(s);
+  if (changed("doll-portrait", [portrait, s.class])) $("doll-portrait").innerHTML = portrait
+    ? `<img src="${portrait}" alt="" onerror="this.remove()"><span>${esc((s.class || "?").charAt(0))}</span>`
+    : `<span>${esc((s.class || "?").charAt(0))}</span>`;
+  $("doll-title").innerHTML = s.level != null
+    ? `<b>Level ${s.level}</b> ${esc(s.race || "")} <span class="cls">${esc(s.class || "")}</span>` : "";
+
   // Average item level over real gear slots; shirt and tabard don't count.
   const levels = items.filter((it) => !COSMETIC_SLOTS.has(it.slot) && it.ilvl).map((it) => it.ilvl);
-  $("gear-ilvl").textContent = levels.length
-    ? `Avg item level ${Math.round(levels.reduce((a, b) => a + b, 0) / levels.length)}` : "";
-  list.innerHTML = GEAR_SLOTS.map(([slot, label]) => {
-    const it = bySlot.get(slot);
-    // Empty shirt and tabard slots are normal; leave them out.
-    if (!it && COSMETIC_SLOTS.has(slot)) return "";
-    const q = Number.isInteger(it?.quality) ? ` q${Math.min(Math.max(it.quality, 0), 7)}` : "";
-    const name = it ? esc(it.name || `Item ${it.id ?? ""}`) : "Empty";
-    return `<div class="item${it ? q : " empty"}">
-      <span class="name" title="${name}">${name}</span>
-      <span class="ilvl">${it?.ilvl ? `ilvl ${it.ilvl}` : ""}</span>
-      <span class="slot">${label}</span>
-    </div>`;
-  }).join("");
+  const avg = levels.length ? Math.round(levels.reduce((a, b) => a + b, 0) / levels.length) : null;
+  const p = s.power || {};
+  const rows = [
+    ["Health", s.healthMax != null ? fmt.format(s.healthMax) : null],
+    [(POWER[p.type] || [p.type || "Power"])[0], p.max != null ? fmt.format(p.max) : null],
+    ["Item level", avg],
+    ["Equipped", `${items.filter((it) => !COSMETIC_SLOTS.has(it.slot)).length} / 17`],
+    ["Gold", s.money != null ? money(s.money) : null],
+  ].filter(([, v]) => v != null);
+  $("doll-stats").innerHTML = rows.map(([k, v]) => `<div><dt>${esc(k)}:</dt><dd>${v}</dd></div>`).join("");
+  $("gear-note").textContent = items.length ? "Hover an item for its tooltip" : "No equipment received yet";
 }
 
 function describe(e) {
@@ -533,7 +602,7 @@ function renderRoster() {
     const color = CLASS_COLORS[c.classToken] || "var(--gold)";
     return `<button type="button" data-id="${esc(c.id)}" class="${c.id === selected ? "on" : ""}"
         style="--c:${color}" title="${esc([c.name, c.surname].filter(Boolean).join(" "))} · ${esc(c.realm || "")}">
-      <span class="mini-crest${c.online ? " online" : ""}">${esc((c.class || "?").charAt(0))}</span>
+      <span class="mini-crest${c.online ? " online" : ""}">${racePortrait(c) ? `<img src="${racePortrait(c)}" alt="" onerror="this.remove()">` : ""}<span>${esc((c.class || "?").charAt(0))}</span></span>
       <span class="label"><b>${esc(c.name)}</b><span>${c.level ? `Level ${c.level}` : ""}${c.online ? " · online" : ""}</span></span>
     </button>`;
   }).join("");
