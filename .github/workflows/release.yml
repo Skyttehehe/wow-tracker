@@ -22,7 +22,7 @@ jobs:
             deps: pyinstaller pillow
             app: build/exe/ForeverTrackerCompanion.exe
             files: dist/ForeverTracker.zip dist/ForeverTracker-[0-9]*.zip
-          - os: macos-14   # Apple Silicon
+          - os: macos-latest   # Apple Silicon
             deps: pyinstaller pyobjc-framework-Quartz
             app: build/exe/ForeverTrackerCompanion.app/Contents/MacOS/ForeverTrackerCompanion
             files: dist/ForeverTracker-mac*.zip
