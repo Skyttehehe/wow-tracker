@@ -13,6 +13,8 @@ const EVENT_ICONS = { level: "★", death: "☠", zone: "⚑", quest: "✔", acc
 const FILTER_GROUPS = { quest: ["quest", "accept", "abandon"] };
 const SESSION_GAP = 15 * 60; // seconds; longer gaps count as a break
 const DEFAULT_MAP = { width: 1002, height: 668 };
+// Set in config.js: "api" when the backend serves this page, a full URL when it doesn't (Vercel).
+const API = (window.FT_CONFIG?.apiBase ?? "api").replace(/\/+$/, "");
 
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat();
@@ -453,8 +455,8 @@ function renderAll() {
 async function load() {
   try {
     const [st, hist] = await Promise.all([
-      fetch("api/state").then((r) => r.json()),
-      fetch("api/history").then((r) => r.json()),
+      fetch(`${API}/state`).then((r) => r.json()),
+      fetch(`${API}/history`).then((r) => r.json()),
     ]);
     state = st;
     history = hist;
@@ -466,7 +468,7 @@ async function load() {
 
 function connect() {
   if (!window.EventSource) return;
-  const es = new EventSource("api/stream");
+  const es = new EventSource(`${API}/stream`);
   es.addEventListener("update", load);
   es.addEventListener("live", (ev) => {
     const quests = state?.quests;

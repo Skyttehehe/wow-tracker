@@ -94,6 +94,29 @@ python3 companion/ft_companion.py                         # run it
 On Linux, `deploy/ft-companion.service` runs it as a systemd user service. On Windows, run it with `pythonw`
 from a scheduled task at logon.
 
+### Website on Vercel (wow.osrs.dk)
+
+Instead of serving the page from the backend, the website can run on Vercel while the backend stays at home.
+Vercel only hosts the static page; the backend (SQLite, live stream, LAN-only uploads) can't run there.
+
+```
+friends ──▶ wow.osrs.dk (Vercel: frontend/) ──page calls──▶ wow-api.osrs.dk (Caddy, GET only) ──▶ backend
+```
+
+1. **API host.** Add `deploy/Caddyfile.api-for-vercel` to your Caddyfile (set the backend's LAN IP), and point
+   `wow-api.osrs.dk` (A record) at your home IP with ports 80/443 forwarded to Caddy. In the backend's env file
+   set `FT_CORS_ORIGINS=https://wow.osrs.dk` and restart it. Check: `https://wow-api.osrs.dk/api/state` returns
+   JSON and `https://wow-api.osrs.dk/api/ingest` returns 404.
+2. **Vercel project.** *Add New → Project*, import this repository, keep *Root Directory* at the repo root and
+   deploy. `vercel.json` does the rest: it builds the zone maps with `tools/fetch_maps.py` (they're not in git)
+   and publishes `frontend/`.
+3. **Domain.** In the project, *Settings → Domains → Add* `wow.osrs.dk`. At the DNS host for `osrs.dk` add the
+   record Vercel shows, normally `CNAME wow → cname.vercel-dns.com`. Vercel issues the certificate itself.
+
+`frontend/config.js` decides where the page looks for the API: on `wow.osrs.dk` and `*.vercel.app` it calls
+`https://wow-api.osrs.dk/api`, anywhere else it uses the same origin, so self-hosting still works unchanged.
+Preview deployments (`*.vercel.app`) only get data if you add their origin to `FT_CORS_ORIGINS` (or use `*`).
+
 ### Zone maps
 
 `python3 tools/fetch_maps.py` builds `frontend/maps/<uiMapID>.jpg` (plus `index.json`) from the game's own world map

@@ -29,6 +29,9 @@ PORT = int(os.environ.get("FT_PORT", "8787"))
 STATIC = os.path.realpath(os.environ.get("FT_STATIC", os.path.join(HERE, "..", "frontend")))
 INGEST_NETS = [ipaddress.ip_network(n.strip()) for n in os.environ.get(
     "FT_INGEST_NETS", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8").split(",")]
+# Sites on other hosts allowed to read the public API, e.g. "https://wow.osrs.dk" when the
+# website runs on Vercel. Comma-separated; "*" allows any. Uploads never get CORS headers.
+CORS_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("FT_CORS_ORIGINS", "").split(",") if o.strip()}
 PRESENCE_TIMEOUT = 120   # seconds without a heartbeat before showing offline
 MAX_BODY = 2 * 1024 * 1024
 
@@ -301,6 +304,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if os.environ.get("FT_ACCESS_LOG"):
             super().log_message(fmt, *args)
+
+    def end_headers(self):
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin", "").rstrip("/") if headers else ""
+        if (origin and getattr(self, "command", None) in ("GET", "HEAD")
+                and getattr(self, "path", "").startswith("/api/")
+                and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS)):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
 
     def send_json(self, obj, status=HTTPStatus.OK):
         body = json.dumps(obj, separators=(",", ":")).encode()
