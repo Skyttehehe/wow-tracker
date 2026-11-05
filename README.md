@@ -123,10 +123,12 @@ To build the package friends need (Windows):
 
 ```bash
 python -m pip install pyinstaller pillow
-python tools/package.py                # -> dist/ForeverTracker-<version>.zip
+python tools/package.py                # -> dist/ForeverTracker-<version>.zip and dist/ForeverTracker.zip
+gh release create v<version> dist/ForeverTracker.zip dist/ForeverTracker-<version>.zip
 ```
 
-The zip holds `ForeverTrackerCompanion.exe` (Python bundled; on first run it finds WoW, installs the addon and asks
+The site's footer links to `releases/latest/download/ForeverTracker.zip`, so publishing a new release updates the
+download for everyone. The zip holds `ForeverTrackerCompanion.exe` (Python bundled; on first run it finds WoW, installs the addon and asks
 for the key), the addon folder for installing by hand, and a README for your friend. Each friend's uploads count
 towards the same Upstash command budget, so with several people playing, keep an eye on usage.
 

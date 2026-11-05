@@ -95,7 +95,10 @@ def main():
             z.write(os.path.join(ADDON, name), f"{top}/ForeverTracker/{name}")
         z.writestr(f"{top}/README.txt", README.format(version=ver, site=site()).replace("\n", "\r\n"))
     shutil.rmtree(os.path.join(BUILD, "work"), ignore_errors=True)
+    # The site's footer links to releases/latest/download/ForeverTracker.zip.
+    shutil.copyfile(out, os.path.join(DIST, "ForeverTracker.zip"))
     print(f"\n{out} ({os.path.getsize(out) // 1024} KB)")
+    print(f"Publish: gh release create v{ver} dist/ForeverTracker.zip {os.path.relpath(out, ROOT)}")
 
 
 if __name__ == "__main__":
