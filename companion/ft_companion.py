@@ -954,6 +954,15 @@ def main():
     else:
         with open(args.config, encoding="utf-8") as f:
             cfg = json.load(f)
+        # Installs before 0.6.4 were set up to upload every 2 s; the page now updates every second.
+        if cfg.get("live_seconds") == 2:
+            cfg["live_seconds"] = 1
+            try:
+                with open(args.config, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2)
+                log("config: live uploads now every second")
+            except OSError as exc:
+                log(f"config: couldn't save live_seconds: {exc}")
     install_addon(cfg)
     autostart(cfg)
 
