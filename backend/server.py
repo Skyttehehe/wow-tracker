@@ -9,6 +9,8 @@
 - /api/admin/keys        friends' upload keys (FT_TOKEN only): GET list, POST
                          {"name"} to create, DELETE ?id= to revoke
 - DELETE /api/admin/characters?c=   take a character off the site
+- DELETE /api/admin/rows?c=&from=&to=   drop a character's trail, XP samples and
+                         journal entries between two times (unix seconds)
 - everything else        static frontend
 
 Each character's data is kept apart. FT_TOKEN is the owner's key; friends get
@@ -503,6 +505,12 @@ class SqliteStore(Store):
                 "SELECT data FROM events ORDER BY t DESC LIMIT ?", (limit_events,)).fetchall()
         return list(reversed(positions)), xp, [r[0] for r in events]
 
+    def delete_rows(self, t_from, t_to):
+        with self.lock, self.conn:
+            return sum(self.conn.execute(f"DELETE FROM {table} WHERE t BETWEEN ? AND ?",
+                                         (t_from, t_to)).rowcount
+                       for table in ("events", "positions", "xp"))
+
     def move_into(self, dest):
         """Copies everything into `dest` (an empty store) and empties this one."""
         with self.lock:
@@ -589,6 +597,10 @@ class RedisStore(Store):
         ])
         return ([json.loads(p) for p in positions or []], [json.loads(x) for x in xp or []],
                 events or [])
+
+    def delete_rows(self, t_from, t_to):
+        return sum(self.pipeline([["ZREMRANGEBYSCORE", k, t_from, t_to]
+                                  for k in (self.EVENTS, self.POSITIONS, self.XP)]))
 
     def move_into(self, dest):
         """Renames this store's keys to `dest`'s (an empty store)."""
@@ -731,6 +743,17 @@ class Tracker:
         chars = self.characters()
         return self.store(chars[0]["id"]) if chars else None
 
+    def delete_rows(self, char, t_from, t_to):
+        """Removes history rows between two times, e.g. ones filed under the wrong character."""
+        store = self.find(char)
+        if store is None:
+            return None
+        removed = store.delete_rows(t_from, t_to)
+        with store.transaction():
+            # A new version makes the page (and the CDN) load the history again.
+            store.put("historyAt", max(int(time.time()), (store.get("historyAt") or 0) + 1))
+        return removed
+
     def hide(self, char):
         with self.root.transaction():
             index, owners = self.root.get("index") or {}, self.root.get("owners") or {}
@@ -863,6 +886,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"removed": TRACKER.remove_key(self.query("id"))})
         if path == "/api/admin/characters":
             return self.send_json({"removed": TRACKER.hide(self.query("c"))})
+        if path == "/api/admin/rows":
+            try:
+                t_from, t_to = int(self.query("from")), int(self.query("to"))
+            except ValueError:
+                return self.error(HTTPStatus.BAD_REQUEST, "from and to: unix seconds")
+            removed = TRACKER.delete_rows(self.query("c"), t_from, t_to)
+            if removed is None:
+                return self.error(HTTPStatus.NOT_FOUND, "no such character")
+            return self.send_json({"removed": removed})
         return self.error(HTTPStatus.NOT_FOUND, "not found")
 
     def do_GET(self):

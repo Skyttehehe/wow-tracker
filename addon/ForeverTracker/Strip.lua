@@ -11,7 +11,8 @@
 --   33-34 x * 65535            35-36 y * 65535 37-40 money (copper)
 --   41-44 server time          45   message id 46 chunk index
 --   47    chunk count          48   chunk length
---   49-166 chunk bytes         167  health %   168  power %
+--   49-165 chunk bytes         166  character tag (FT.CharTag; 0 = unknown)
+--   167   health %             168  power %
 --   169-170 Fletcher-16 of bytes 0-168
 --
 -- Messages (identity, zone, quest log, gear, professions, jumps, target, journal events) are JSON prefixed with
@@ -20,10 +21,10 @@
 
 local FT = ForeverTracker
 
-local VERSION = 2
+local VERSION = 3
 local CELL_PX = 4
 local NUM_BYTES = 171
-local CHUNK = 118
+local CHUNK = 117
 local UPDATE = 0.1     -- seconds between strip redraws
 local HOLD = 2         -- redraws each chunk stays on screen
 
@@ -242,6 +243,7 @@ local function encode()
 				put(35, s.y * 65535, 2)
 			end
 			put(41, FT.Now(), 4)
+			bytes[166] = FT.CharTag(s.name, s.realm)
 
 			schedule()
 			if not current or current.shown >= HOLD then nextChunk() end

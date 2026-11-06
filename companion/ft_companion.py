@@ -14,6 +14,7 @@ Standard library only (Pillow for screen capture on Windows).
 
 import argparse
 import glob
+import hashlib
 import ipaddress
 import json
 import os
@@ -599,6 +600,13 @@ def install_addon(cfg):
 
 # --- main loop ---------------------------------------------------------------
 
+def who_of(snap):
+    """{'name', 'realm'} of a snapshot or identity, or None."""
+    if isinstance(snap, dict) and snap.get("name"):
+        return {"name": snap["name"], "realm": snap.get("realm")}
+    return None
+
+
 class Companion:
     LIVE_EVERY = 1.0      # seconds between live uploads (config: live_seconds)
     CAPTURE_EVERY = 0.05  # seconds between strip reads
@@ -614,7 +622,8 @@ class Companion:
         self.path = None
         self.mtime = None
         self.db = None
-        self.pending = None
+        self.pending = []         # (payload, character, key, digest) from the saved file
+        self.stash_sent = {}      # other characters' saved history: what was last sent
         self.last_heartbeat = 0
         self.was_running = None
         self.last_file_check = 0
@@ -660,28 +669,48 @@ class Companion:
         """The player hasn't chosen yet whether to share time spent appearing offline."""
         return bool((self.db or {}).get("offlineSince"))
 
-    def build_payload(self, running):
+    def build_payload(self, running, hist=None):
+        """The saved file's upload for one character: the one last played (top
+        level of the file), or another character's history from db.chars."""
         s = self.settings()
         if not s.get("enabled"):
             return None  # tracking off: nothing leaves this machine
         if s.get("appearOffline") or self.offline_pending():
             # Recorded while appearing offline (or not decided yet): stays on this PC.
-            return {"kind": "presence", "online": False}
-        snap = self.db.get("snapshot")
-        if not snap:
+            return {"kind": "presence", "online": False} if hist is None else None
+        hist = self.db if hist is None else hist
+        snap = hist.get("snapshot")
+        if not isinstance(snap, dict) or not snap.get("name"):
             return None
         return {
             "kind": "snapshot",
             "gameRunning": running,
             "snapshot": snap,
-            "events": self.db.get("events") or [],
-            "positions": self.db.get("positions") or [],
-            "xp": self.db.get("xp") or [],
-            "quests": self.db.get("quests"),
-            "gear": self.db.get("gear"),
-            "professions": self.db.get("professions"),
+            "events": hist.get("events") or [],
+            "positions": hist.get("positions") or [],
+            "xp": hist.get("xp") or [],
+            "quests": hist.get("quests"),
+            "gear": hist.get("gear"),
+            "professions": hist.get("professions"),
             "jumps": (self.db.get("jumps") or {}).get(f"{snap.get('name')}-{snap.get('realm') or ''}"),
         }
+
+    def file_payloads(self, running):
+        """Every upload the saved file calls for, each with its own character."""
+        out = []
+        for key, hist in sorted(((self.db or {}).get("chars") or {}).items()):
+            payload = isinstance(hist, dict) and self.build_payload(running, hist)
+            if not payload:
+                continue
+            payload["gameRunning"] = False  # not the character being played
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            if self.stash_sent.get(key) != digest:  # unchanged since it was last sent: skip
+                out.append((payload, who_of(payload["snapshot"]), key, digest))
+        payload = self.build_payload(running)
+        if payload:
+            who = who_of((self.db or {}).get("snapshot")) if payload.get("kind") == "snapshot" else None
+            out.append((payload, who, None, None))
+        return out
 
     def ingest_url(self):
         """backend_url (a site on Vercel) wins over the in-game LAN address."""
@@ -705,13 +734,13 @@ class Companion:
                 return {"name": who["name"], "realm": who.get("realm")}
         return None
 
-    def send(self, payload):
+    def send(self, payload, who=None):
         url = self.ingest_url()
         if not url:
             log("no usable backend: set backend_url (https://...) in the config, "
                 "or a LAN address in game; not sending")
             return True  # don't retry an invalid target
-        who = self.character()
+        who = who or self.character()
         if not who:
             return True  # nothing to attach it to until the game tells us who's playing
         if not self.token:
@@ -747,9 +776,9 @@ class Companion:
             return
         self.path, self.mtime = path, mtime
         running = game_running()
-        self.pending = self.build_payload(running)
+        self.pending = self.file_payloads(running)
         log(f"saved variables changed ({path}); "
-            + ("sending update" if self.pending else "tracking off, not sending"))
+            + (f"sending {len(self.pending)} update(s)" if self.pending else "nothing to send"))
 
     # --- live strip ---------------------------------------------------------
 
@@ -770,6 +799,12 @@ class Companion:
             return
         kind, payload = msg
         if kind == "I":
+            if isinstance(payload, dict) and self.identity and who_of(payload) != who_of(self.identity):
+                # Another character logged in: drop what was cached for the last one.
+                self.zone = self.quests = self.gear = self.target = self.professions = self.jumps = None
+                self.quests_dirty = self.gear_dirty = self.professions_dirty = self.jumps_dirty = False
+                self.events = []
+                log(f"now playing {payload.get('name')}")
             self.identity = payload
         elif kind == "Z":
             self.zone = payload
@@ -800,6 +835,12 @@ class Companion:
             return
         if not self.ingest_url():
             return  # keep queued events until we know where to send them
+        # Just after switching characters the strip already shows the new one's
+        # numbers, but its name arrives a moment later: wait for it.
+        tag = self.frame.get("char")
+        if tag and (not self.identity
+                    or strip.char_tag(self.identity.get("name"), self.identity.get("realm")) != tag):
+            return
         self.last_live_post = now
         flags = self.frame["flags"]
         if flags["hidden"]:
@@ -814,7 +855,8 @@ class Companion:
         target = dict(self.target) if self.target else None
         if target:
             target.pop("guid", None)  # scrambled by the client; never uploaded
-        payload = {"kind": "live", "frame": self.frame, "identity": self.identity,
+        frame = {k: v for k, v in self.frame.items() if k != "char"}
+        payload = {"kind": "live", "frame": frame, "identity": self.identity,
                    "zone": self.zone, "events": self.events, "target": target}
         # Health/power from the game's combat log, only while the in-game
         # setting is on (the strip says so).
@@ -858,8 +900,13 @@ class Companion:
         if now - self.last_file_check >= self.poll:
             self.last_file_check = now
             self.check_file()
-            if self.pending and self.send(self.pending):
-                self.pending = None
+            while self.pending:
+                payload, who, key, digest = self.pending[0]
+                if not self.send(payload, who):
+                    break  # network trouble: retry on the next check
+                self.pending.pop(0)
+                if key:
+                    self.stash_sent[key] = digest
                 self.last_heartbeat = now
 
         if self.live and now - self.game_checked >= self.GAME_CHECK:
@@ -973,7 +1020,8 @@ def main():
         c = Companion(cfg)
         c.db = parse_saved_variables(path).get("ForeverTrackerDB") or {}
         print(json.dumps({"file": path, "settings": c.settings(),
-                          "payload": c.build_payload(game_running())}, indent=2))
+                          "uploads": [{"character": who, "payload": p}
+                                      for p, who, _, _ in c.file_payloads(game_running())]}, indent=2))
         return
 
     Companion(cfg).run()

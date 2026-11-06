@@ -8,7 +8,7 @@ CELL_PX = 4
 NUM_BYTES = 171
 NUM_CELLS = NUM_BYTES // 3
 WIDTH = NUM_CELLS * CELL_PX
-VERSIONS = (1, 2)  # v2 adds health/power percent and shrinks chunks to 118 bytes
+VERSIONS = (1, 2, 3)  # v2 adds health/power percent (chunks 118 bytes); v3 a character tag (117)
 
 FLAGS = {"sharing": 1, "dead": 2, "ghost": 4, "combat": 8, "resting": 16, "hidden": 32, "leaving": 64,
          "combatLog": 128}
@@ -68,10 +68,22 @@ def decode(data):
         "x": round(num(data, 33, 2) / 65535, 4) if has("pos") else None,
         "y": round(num(data, 35, 2) / 65535, 4) if has("pos") else None,
     }
+    # v3: which character these numbers belong to (char_tag); 0 = unknown.
+    frame["char"] = data[166] if data[2] >= 3 and data[166] else None
     length = data[48]
-    if data[45] and 0 < length <= (118 if v2 else 120):
+    if data[45] and 0 < length <= (117 if data[2] >= 3 else 118 if v2 else 120):
         frame["chunk"] = (data[45], data[46], data[47], bytes(data[49:49 + length]))
     return frame
+
+
+def char_tag(name, realm):
+    """The addon's FT.CharTag: 1-255 for a 'Name-Realm', 0 without a name."""
+    if not name:
+        return 0
+    h = 0
+    for b in f"{name}-{realm or ''}".encode("utf-8"):
+        h = (h * 31 + b) % 65521
+    return h % 255 + 1
 
 
 class Reassembler:

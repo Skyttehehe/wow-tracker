@@ -240,6 +240,43 @@ local function samplePosition()
 	push(db.positions, pos, MAX_POSITIONS)
 end
 
+-- One small number per character ("Name-Realm"), shown in every strip frame so
+-- the companion can tell which character the live numbers belong to.
+function FT.CharTag(name, realm)
+	if not name then return 0 end
+	local s, h = name .. "-" .. (realm or ""), 0
+	for i = 1, #s do h = (h * 31 + s:byte(i)) % 65521 end
+	return h % 255 + 1
+end
+
+-- The saved file is shared by every character on the account. The top-level
+-- history belongs to db.char; other characters' history waits in db.chars
+-- until they log in again, so nothing is ever uploaded under the wrong name.
+local HISTORY = { "events", "positions", "xp", "snapshot", "quests", "gear", "professions" }
+local function useCharacter()
+	local name, realm = read(nil, UnitName, "player"), read(nil, GetRealmName)
+	if not name or name == "" or name == UNKNOWNOBJECT then return end
+	local key = name .. "-" .. (realm or "")
+	if not db.char and db.snapshot and db.snapshot.name then
+		db.char = db.snapshot.name .. "-" .. (db.snapshot.realm or "") -- file from before 0.6.5
+	end
+	if db.char == key then return end
+	db.chars = db.chars or {}
+	if db.char then
+		local old = {}
+		for _, k in ipairs(HISTORY) do old[k] = db[k] end
+		db.chars[db.char] = old
+	end
+	local mine = db.chars[key] or {}
+	db.chars[key] = nil
+	for _, k in ipairs(HISTORY) do db[k] = mine[k] end
+	db.events = db.events or {}
+	db.positions = db.positions or {}
+	db.xp = db.xp or {}
+	db.char = key
+	FT.current, FT.professionsKey = nil, nil
+end
+
 local function initDB()
 	ForeverTrackerDB = ForeverTrackerDB or {}
 	db = ForeverTrackerDB
@@ -252,6 +289,7 @@ local function initDB()
 	db.positions = db.positions or {}
 	db.xp = db.xp or {}
 	FT.db = db
+	useCharacter()
 end
 
 -- Refreshes the cached snapshot. Runs every TICK seconds, so the file holds
@@ -264,6 +302,7 @@ local wasSharing
 
 local function refresh()
 	if not db then return end
+	useCharacter()
 	if not FT.IsRecording() then
 		db.snapshot = nil
 		db.quests = nil
@@ -347,6 +386,7 @@ function handlers.ADDON_LOADED(name)
 end
 
 function handlers.PLAYER_ENTERING_WORLD(isInitialLogin, isReload)
+	useCharacter()
 	leaving = false
 	FT.questsDirty = true
 	FT.gearDirty = true
