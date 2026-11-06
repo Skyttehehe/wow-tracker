@@ -346,7 +346,7 @@ def first_run(path):
                     "and open ForeverTrackerCompanion from there.", error=True)
         sys.exit(1)
     cfg = {"wow_path": wow, "backend_url": DEFAULT_BACKEND,
-           "poll_seconds": 2, "live_seconds": 2, "heartbeat_seconds": 30}
+           "poll_seconds": 2, "live_seconds": 1, "heartbeat_seconds": 30}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)

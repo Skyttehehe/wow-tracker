@@ -98,10 +98,10 @@ friends ──▶ wow.osrs.dk (page polls /api/state) ─────┘
 Differences from running it yourself:
 
 - Uploads come over the internet, so the token is the only thing guarding them. Keep it secret.
-- There's no live stream (Vercel functions end after each request). The page polls every 3 seconds instead,
-  through a 2-second CDN cache, so the number of viewers doesn't change how often the function or database runs.
-- Cost: every upload is a function call plus about 2 to 4 Redis commands. With `live_seconds: 2` in the
-  companion, an hour of play is roughly 1,800 uploads. Compare that with your Upstash plan's monthly command limit;
+- There's no live stream (Vercel functions end after each request). The page polls every second instead,
+  through a 1-second CDN cache, so the number of viewers doesn't change how often the function or database runs.
+- Cost: every upload is a function call plus about 2 to 4 Redis commands. With `live_seconds: 1` in the
+  companion, an hour of play is roughly 3,600 uploads. Compare that with your Upstash plan's monthly command limit;
   raise `live_seconds` if you get close.
 
 #### Friends on the same site

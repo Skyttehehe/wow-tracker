@@ -878,7 +878,7 @@ class Handler(BaseHTTPRequestHandler):
             if store is None:
                 return self.error(HTTPStatus.NOT_FOUND, "no such character")
             if url.path == "/api/state":
-                return self.send_json(store.state(), cdn_seconds=2)
+                return self.send_json(store.state(), cdn_seconds=1)
             if url.path == "/api/history":
                 # The page asks for ?v=<historyAt>, so a new version always misses the cache.
                 return self.send_json(store.history(), cdn_seconds=60)

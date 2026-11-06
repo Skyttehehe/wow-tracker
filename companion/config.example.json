@@ -3,6 +3,6 @@
   "backend_url": "https://wow.osrs.dk",
   "token": "FT_TOKEN for the owner; friends leave this out and enter their code in game",
   "poll_seconds": 2,
-  "live_seconds": 2,
+  "live_seconds": 1,
   "heartbeat_seconds": 30
 }

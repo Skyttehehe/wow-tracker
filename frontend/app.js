@@ -12,7 +12,7 @@ const POWER = {
 const EVENT_ICONS = { level: "★", death: "☠", zone: "⚑", quest: "✔", accept: "!", abandon: "✕", login: "⏻", skill: "⚒" };
 const FILTER_GROUPS = { quest: ["quest", "accept", "abandon"] };
 const SESSION_GAP = 15 * 60; // seconds; longer gaps count as a break
-const POLL_SECONDS = 3;       // update rate when the backend has no stream (Vercel)
+const POLL_SECONDS = 1;       // update rate when the backend has no stream (Vercel)
 const DEFAULT_MAP = { width: 1002, height: 668 };
 
 const $ = (id) => document.getElementById(id);
@@ -126,7 +126,7 @@ function renderPresence() {
   pill.className = `pill ${online ? "online" : "offline"}`;
   $("presence-text").textContent = !online ? "Offline" : state.live ? "Live" : "Online";
   let text = "";
-  if (online && state.live) text = state.stream === false ? `Updating every ${POLL_SECONDS} s` : "Updating every second";
+  if (online && state.live) text = state.stream === false && POLL_SECONDS !== 1 ? `Updating every ${POLL_SECONDS} s` : "Updating every second";
   else if (state?.updatedAt) text = `Last update ${ago(state.updatedAt)}`;
   if (!online && state?.presenceAt) text += `${text ? " · " : ""}seen ${ago(state.presenceAt)}`;
   $("freshness").textContent = text;
@@ -781,7 +781,13 @@ fetch("maps/index.json")
     setInterval(loadCharacters, 15_000);
     // On Vercel there is no live stream (functions end after each request): poll instead.
     if (state?.stream !== true) {
-      setInterval(() => (selected ? load(false) : loadCharacters().then(() => load())), POLL_SECONDS * 1000);
+      // Skip a tick while the previous request is still out, so slow responses don't pile up.
+      let polling = false;
+      setInterval(() => {
+        if (polling) return;
+        polling = true;
+        (selected ? load(false) : loadCharacters().then(() => load())).finally(() => { polling = false; });
+      }, POLL_SECONDS * 1000);
       return;
     }
     connect();
