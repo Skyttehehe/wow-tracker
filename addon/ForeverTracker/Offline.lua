@@ -37,7 +37,8 @@ local function keepPrivate()
 	FT.Refresh()
 end
 
-StaticPopupDialogs = StaticPopupDialogs or {}
+-- Only add a key: assigning the StaticPopupDialogs global itself (even to its
+-- own value) taints it, and the game then blocks its own popups' actions.
 StaticPopupDialogs.FOREVERTRACKER_SHARE_OFFLINE = {
 	text = "While you appeared offline, Forever Tracker recorded %s.\n\nShare it on the website?",
 	button1 = "Share (reloads UI)",

@@ -139,6 +139,7 @@ tinsert = table.insert
 local reloaded = false
 function ReloadUI() reloaded = true end
 local popups = {}
+StaticPopupDialogs = {}  -- the game's own table; the addon only adds to it
 function StaticPopup_Show(name, text) popups[#popups + 1] = { name = name, text = text } end
 
 local function load(file) assert(loadfile("addon/ForeverTracker/" .. file))("ForeverTracker") end
